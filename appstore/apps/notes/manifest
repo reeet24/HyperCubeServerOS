@@ -1,0 +1,7 @@
+{
+  title = "Notes",
+  id = "notes",
+  author = "Tesserac",
+  description = "Simple local notes stored in your encrypted HCFS.",
+  version = "1.0.0",
+}
