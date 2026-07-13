@@ -1,7 +1,5 @@
 # Draft Tesserac Terms of Service
 
-This is a draft operating policy for an in-game ComputerCraft service. It is not legal advice. Review and edit it before presenting it to players.
-
 ## 1. Services Covered
 
 These terms cover use of Tesserac services, including:
