@@ -1,0 +1,7 @@
+{
+  title = "CMR Trains",
+  id = "trains",
+  author = "Tesserac",
+  description = "Live CMR train timetable sorted by soonest ETA.",
+  version = "1.0.0",
+}

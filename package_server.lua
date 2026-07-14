@@ -9,9 +9,12 @@ local INCLUDE_ROOTS = {
     "Kernal",
     "appstore",
     "installer",
+    "docs",
     "init.lua",
     "startup.lua",
+    "README.md",
     "checklist.md",
+    "update_server.lua",
 }
 
 local EXCLUDE = {
@@ -230,10 +233,14 @@ local function installer_source(files)
 
 local CLEAN_PATHS = {
   "Kernal",
+  "appstore",
   "installer",
+  "docs",
   "init.lua",
   "startup.lua",
+  "README.md",
   "checklist.md",
+  "update_server.lua",
 }
 
 local function ensure_parent(path)

@@ -36,6 +36,19 @@ HyperCubeServer is the main Tesserac server OS for ComputerCraft. It hosts the T
 - `docs/server-flow.md`: Full server boot, network, service, identity, banking, phone, web, moderation, and update flow.
 - `docs/tos-draft.md`: Draft terms of service for phone and Tesserac users.
 
+## GitHub Server Updates
+
+Run `update_server.lua` on the main server computer to update source files from `reeet24/HyperCubeServerOS`.
+
+Useful options:
+
+- `update_server.lua --dry-run`: Fetch metadata and count files without changing anything.
+- `update_server.lua --yes`: Update without the confirmation prompt.
+- `update_server.lua --branch main`: Select a branch.
+- `update_server.lua --root computer/0`: Force the server source root if auto-detection fails.
+
+The updater replaces server source paths such as `Kernal`, `appstore`, `installer`, `docs`, `init.lua`, and `startup.lua`, while preserving local `logs`, `user`, `hypercube_db`, disk records, and admin tokens. Restart the server after updating.
+
 ## Kernel Pieces
 
 - `context.lua`: Security context records for users, processes, groups, origin, and sandbox permissions.

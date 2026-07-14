@@ -111,8 +111,7 @@ local function app_hit(app, x, y)
     return x >= app.x and x < app.x + app.w and y >= app.y and y <= app.y + app.h
 end
 
-local function layout_apps(width, height, installed)
-    local icons = {}
+local function home_grid_metrics(width, height)
     local compact = width < 32 or height < 22
     local icon_w = compact and 5 or 7
     local icon_h = compact and 1 or 3
@@ -122,24 +121,61 @@ local function layout_apps(width, height, installed)
     local side_padding = compact and 2 or 4
     local cols = math.max(2, math.floor((width - side_padding) / (icon_w + gap)))
     cols = math.min(cols, compact and 5 or 4)
-    local total_w = cols * icon_w + (cols - 1) * gap
+    local bottom_limit = math.max(start_y, height - 6)
+    local rows = math.max(1, math.floor((bottom_limit - start_y) / row_step) + 1)
+    return {
+        compact = compact,
+        icon_w = icon_w,
+        icon_h = icon_h,
+        gap = gap,
+        row_step = row_step,
+        start_y = start_y,
+        cols = cols,
+        rows = rows,
+        capacity = math.max(1, cols * rows),
+    }
+end
+
+local function clamp_page(page, page_count)
+    page = math.floor(tonumber(page) or 1)
+    page_count = math.max(1, math.floor(tonumber(page_count) or 1))
+    if page < 1 then
+        return 1
+    end
+    if page > page_count then
+        return page_count
+    end
+    return page
+end
+
+local function layout_apps(width, height, installed, page)
+    local icons = {}
+    local metrics = home_grid_metrics(width, height)
+    local cols = metrics.cols
+    local page_count = math.max(1, math.ceil(#(installed or {}) / metrics.capacity))
+    page = clamp_page(page, page_count)
+    local first = (page - 1) * metrics.capacity + 1
+    local last = math.min(#(installed or {}), first + metrics.capacity - 1)
+    local total_w = cols * metrics.icon_w + (cols - 1) * metrics.gap
     local start_x = math.max(2, math.floor((width - total_w) / 2) + 1)
 
-    for i, app in ipairs(installed or {}) do
-        local col = (i - 1) % cols
-        local row = math.floor((i - 1) / cols)
+    for i = first, last do
+        local app = installed[i]
+        local local_index = i - first
+        local col = local_index % cols
+        local row = math.floor(local_index / cols)
         icons[#icons + 1] = {
             app = app,
             id = app.manifest.id,
-            x = start_x + col * (icon_w + gap),
-            y = start_y + row * row_step,
-            w = icon_w,
-            h = icon_h,
+            x = start_x + col * (metrics.icon_w + metrics.gap),
+            y = metrics.start_y + row * metrics.row_step,
+            w = metrics.icon_w,
+            h = metrics.icon_h,
             manifest = app.manifest,
         }
     end
 
-    return icons
+    return icons, page, page_count
 end
 
 local function dock_order(app)
@@ -196,6 +232,38 @@ local function draw_dock(screen, width, height, installed)
     return buttons
 end
 
+local function draw_home_pager(screen, state, width, height)
+    local page = state.home_page or 1
+    local page_count = state.home_page_count or 1
+    if page_count <= 1 then
+        return {}
+    end
+
+    local buttons = {}
+    local label = tostring(page) .. "/" .. tostring(page_count)
+    local y = math.max(2, height - 6)
+    screen:write(center_x(width, label), y, label, C.white, C.black)
+    buttons.home_prev_page = screen:button("home_prev_page", 2, y, 3, "<", {
+        fg = C.white,
+        bg = page > 1 and C.blue or C.gray,
+    })
+    buttons.home_next_page = screen:button("home_next_page", math.max(1, width - 4), y, 3, ">", {
+        fg = C.white,
+        bg = page < page_count and C.blue or C.gray,
+    })
+    return buttons
+end
+
+local function set_home_page(state, page)
+    state.home_page = clamp_page(page, state.home_page_count or 1)
+    return state.home_page
+end
+
+local function move_home_page(state, delta)
+    delta = tonumber(delta) or 0
+    return set_home_page(state, (state.home_page or 1) + delta)
+end
+
 local function find_app(state, id)
     for _, app in ipairs(state.installed_apps or {}) do
         if app.manifest.id == id then
@@ -212,14 +280,16 @@ local function render_home(tphone, state)
     draw_status_bar(screen, tphone, width)
     draw_title(screen, tphone, width)
 
-    state.apps = layout_apps(width, height, state.installed_apps)
+    state.apps, state.home_page, state.home_page_count = layout_apps(width, height, state.installed_apps, state.home_page)
     for _, app in ipairs(state.apps) do
-        if app.y + app.h + 1 < height - 4 then
-            draw_app_icon(screen, app)
-        end
+        draw_app_icon(screen, app)
     end
 
     state.buttons = draw_dock(screen, width, height, state.installed_apps)
+    local pager_buttons = draw_home_pager(screen, state, width, height)
+    for id, button in pairs(pager_buttons) do
+        state.buttons[id] = button
+    end
     draw_home_indicator(screen, width, height)
     screen:present()
 end
@@ -479,6 +549,8 @@ function gui.run(tphone)
         apps = {},
         buttons = {},
         app_buttons = {},
+        home_page = 1,
+        home_page_count = 1,
         borderless_chrome_until = 0,
         borderless_chrome_visible = false,
         running = true,
@@ -507,6 +579,10 @@ function gui.run(tphone)
                     set_active_app(tphone, state, nil)
                 elseif button_id == "shutdown" then
                     state.running = false
+                elseif not state.active_app and button_id == "home_prev_page" then
+                    move_home_page(state, -1)
+                elseif not state.active_app and button_id == "home_next_page" then
+                    move_home_page(state, 1)
                 elseif button_id then
                     if state.active_app then
                         dispatch_app_touch(tphone, state, button_id, event)
@@ -531,6 +607,9 @@ function gui.run(tphone)
             elseif state.active_app then
                 dispatch_app_touch(tphone, state, nil, event)
                 gui.render(tphone, state)
+            else
+                move_home_page(state, tonumber(event.direction or 0) > 0 and 1 or -1)
+                gui.render(tphone, state)
             end
         elseif event and (event.type == "key" or event.type == "key_up" or event.type == "char" or event.type == "paste") and keys then
             if state.active_app and dispatch_app_key(tphone, state, event) then
@@ -543,6 +622,12 @@ function gui.run(tphone)
                     state.running = false
                 elseif key == keys.backspace or key == keys.home then
                     set_active_app(tphone, state, nil)
+                    gui.render(tphone, state)
+                elseif not state.active_app and (key == keys.right or key == keys.down or (keys.pageDown and key == keys.pageDown)) then
+                    move_home_page(state, 1)
+                    gui.render(tphone, state)
+                elseif not state.active_app and (key == keys.left or key == keys.up or (keys.pageUp and key == keys.pageUp)) then
+                    move_home_page(state, -1)
                     gui.render(tphone, state)
                 end
             end

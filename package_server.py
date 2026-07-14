@@ -24,9 +24,12 @@ INCLUDE_ROOTS = [
     "Kernal",
     "appstore",
     "installer",
+    "docs",
     "init.lua",
     "startup.lua",
+    "README.md",
     "checklist.md",
+    "update_server.lua",
 ]
 
 EXCLUDE = {
@@ -151,10 +154,14 @@ def installer_source(files: list[dict[str, object]]) -> str:
 
 local CLEAN_PATHS = {
   "Kernal",
+  "appstore",
   "installer",
+  "docs",
   "init.lua",
   "startup.lua",
+  "README.md",
   "checklist.md",
+  "update_server.lua",
 }
 
 local function ensure_parent(path)

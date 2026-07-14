@@ -1,0 +1,6 @@
+pastebin_dev_key
+banking/
+hypercube_server_install
+logs/
+hypercube_server_pastebin_batch_install.lua
+__pycache__/
