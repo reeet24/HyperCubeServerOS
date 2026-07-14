@@ -84,6 +84,31 @@ local function trim(value)
     return tostring(value or ""):match("^%s*(.-)%s*$")
 end
 
+local function read_file_trim(path)
+    if not fs or not fs.exists or not fs.open or not fs.exists(path) then
+        return nil
+    end
+    local handle = fs.open(path, "r")
+    if not handle then
+        return nil
+    end
+    local data = handle.readAll()
+    handle.close()
+    data = trim(data)
+    if data == "" then
+        return nil
+    end
+    return data
+end
+
+local function github_token()
+    local token = get_option("--token")
+    if token and trim(token) ~= "" then
+        return trim(token)
+    end
+    return read_file_trim("github_token")
+end
+
 local function combine(a, b)
     if fs and fs.combine then
         return fs.combine(a, b)
@@ -153,14 +178,26 @@ local function http_get(url, accept)
     local headers = {
         ["User-Agent"] = "HyperCubeServerOS-Updater",
         ["Accept"] = accept or "application/vnd.github+json",
+        ["X-GitHub-Api-Version"] = "2022-11-28",
     }
-    local ok, response_or_err = pcall(http.get, url, headers)
+    local token = github_token()
+    if token then
+        headers["Authorization"] = "Bearer " .. token
+    end
+    local ok, response_or_err, request_err = pcall(http.get, url, headers)
     if not ok then
         return nil, response_or_err
     end
     local response = response_or_err
+    if not response and tostring(request_err or ""):lower():match("header") then
+        ok, response_or_err, request_err = pcall(http.get, url)
+        if not ok then
+            return nil, response_or_err
+        end
+        response = response_or_err
+    end
     if not response then
-        return nil, "HttpRequestFailed"
+        return nil, request_err or "HttpRequestFailed"
     end
     local body = response.readAll()
     local code = response.getResponseCode and response.getResponseCode() or 200
@@ -181,6 +218,8 @@ local function decode_json(text)
     end
     return result
 end
+
+local entry_names
 
 local function contents_url(path, branch)
     local encoded = encode_path(path)
@@ -206,6 +245,157 @@ local function fetch_contents(path, branch)
     return decoded
 end
 
+local function tree_url(branch)
+    return "https://api.github.com/repos/" .. REPO_OWNER .. "/" .. REPO_NAME
+        .. "/git/trees/" .. encode_segment(branch) .. "?recursive=1"
+end
+
+local function fetch_tree(branch)
+    local body, err = http_get(tree_url(branch))
+    if not body then
+        return nil, err
+    end
+    local decoded, json_err = decode_json(body)
+    if not decoded then
+        return nil, json_err
+    end
+    if type(decoded) == "table" and decoded.message then
+        return nil, decoded.message
+    end
+    if decoded.truncated == true then
+        return nil, "GitHubTreeTruncated"
+    end
+    if type(decoded.tree) ~= "table" then
+        return nil, "GitHubTreeMissing"
+    end
+    return decoded
+end
+
+local function tree_has_path(tree, path, kind)
+    path = normalize(path)
+    for _, entry in ipairs(tree and tree.tree or {}) do
+        if normalize(entry.path) == path and (not kind or entry.type == kind) then
+            return true
+        end
+    end
+    return false
+end
+
+local function tree_looks_like_server_root(tree, root)
+    root = normalize(root)
+    local prefix = root == "" and "" or root .. "/"
+    return tree_has_path(tree, prefix .. "init.lua", "blob")
+        and tree_has_path(tree, prefix .. "startup.lua", "blob")
+        and tree_has_path(tree, prefix .. "Kernal", "tree")
+        and tree_has_path(tree, prefix .. "installer", "tree")
+end
+
+local function tree_root_entries(tree, root)
+    root = normalize(root)
+    local prefix = root == "" and "" or root .. "/"
+    local seen = {}
+    local entries = {}
+    for _, entry in ipairs(tree and tree.tree or {}) do
+        local path = normalize(entry.path)
+        if path:sub(1, #prefix) == prefix then
+            local rest = path:sub(#prefix + 1)
+            local name = rest:match("^([^/]+)")
+            if name and not seen[name] then
+                seen[name] = true
+                entries[#entries + 1] = {
+                    name = name,
+                    type = rest == name and entry.type or "tree",
+                }
+            end
+        end
+    end
+    table.sort(entries, function(a, b)
+        return tostring(a.name) < tostring(b.name)
+    end)
+    return entries
+end
+
+local function detect_remote_root_from_tree(tree, requested)
+    local candidates = {}
+    if requested and requested ~= "" then
+        candidates[#candidates + 1] = normalize(requested)
+    end
+    candidates[#candidates + 1] = "computer/0"
+    candidates[#candidates + 1] = "0"
+    candidates[#candidates + 1] = ""
+
+    for _, candidate in ipairs(candidates) do
+        if tree_looks_like_server_root(tree, candidate) then
+            return normalize(candidate), tree_root_entries(tree, candidate)
+        end
+    end
+
+    for _, entry in ipairs(tree.tree or {}) do
+        if entry.type == "tree" then
+            local path = normalize(entry.path)
+            local depth = 0
+            for _ in path:gmatch("/") do
+                depth = depth + 1
+            end
+            if depth <= 4 and tree_looks_like_server_root(tree, path) then
+                return path, tree_root_entries(tree, path)
+            end
+        end
+    end
+
+    return nil, "NotServerRoot:/ [" .. entry_names(tree_root_entries(tree, "")) .. "]"
+end
+
+local function raw_url(branch, path)
+    return "https://raw.githubusercontent.com/" .. REPO_OWNER .. "/" .. REPO_NAME
+        .. "/" .. encode_segment(branch) .. "/" .. encode_path(path)
+end
+
+local function include_relative(path)
+    path = normalize(path)
+    if path == "" or is_excluded(path) or not is_safe_relative(path) then
+        return false
+    end
+    for _, root in ipairs(INCLUDE_ROOTS) do
+        if path == root or path:sub(1, #root + 1) == root .. "/" then
+            return true
+        end
+    end
+    return false
+end
+
+local function collect_package_from_tree(remote_root, branch, tree)
+    local files = {}
+    remote_root = normalize(remote_root)
+    local prefix = remote_root == "" and "" or remote_root .. "/"
+    for _, entry in ipairs(tree and tree.tree or {}) do
+        if entry.type == "blob" then
+            local remote_path = normalize(entry.path)
+            local relative
+            if prefix == "" then
+                relative = remote_path
+            elseif remote_path:sub(1, #prefix) == prefix then
+                relative = remote_path:sub(#prefix + 1)
+            end
+            if relative and include_relative(relative) then
+                local data, data_err = http_get(raw_url(branch, remote_path), "application/octet-stream")
+                if not data then
+                    return nil, data_err
+                end
+                files[#files + 1] = {
+                    path = relative,
+                    data = data,
+                    size = #data,
+                }
+            end
+        end
+    end
+    table.sort(files, function(a, b)
+        return a.path < b.path
+    end)
+    return files
+end
+
 local function entry_list_has(entries, name)
     for _, entry in ipairs(entries or {}) do
         if entry.name == name then
@@ -215,12 +405,54 @@ local function entry_list_has(entries, name)
     return false
 end
 
+entry_names = function(entries)
+    local names = {}
+    for _, entry in ipairs(entries or {}) do
+        names[#names + 1] = tostring(entry.name or "?")
+    end
+    table.sort(names)
+    return table.concat(names, ", ")
+end
+
 local function looks_like_server_root(entries)
     return type(entries) == "table"
         and entry_list_has(entries, "init.lua")
         and entry_list_has(entries, "startup.lua")
         and entry_list_has(entries, "Kernal")
         and entry_list_has(entries, "installer")
+end
+
+local function find_server_root(branch, path, depth, seen)
+    path = normalize(path)
+    seen = seen or {}
+    if seen[path] then
+        return nil, "AlreadyChecked"
+    end
+    seen[path] = true
+
+    local entries, err = fetch_contents(path, branch)
+    if not entries then
+        return nil, err
+    end
+    if looks_like_server_root(entries) then
+        return path, entries
+    end
+    if depth <= 0 or type(entries) ~= "table" or entries.type then
+        return nil, "NotServerRoot:" .. (path == "" and "/" or path) .. " [" .. entry_names(entries) .. "]"
+    end
+
+    local last_err = "ServerRootNotFound"
+    for _, entry in ipairs(entries) do
+        if entry.type == "dir" and entry.name ~= ".git" and entry.name ~= ".github" then
+            local child_path = path == "" and entry.name or combine(path, entry.name)
+            local found, found_entries = find_server_root(branch, child_path, depth - 1, seen)
+            if found then
+                return found, found_entries
+            end
+            last_err = found_entries or last_err
+        end
+    end
+    return nil, last_err
 end
 
 local function detect_remote_root(branch, requested)
@@ -238,9 +470,17 @@ local function detect_remote_root(branch, requested)
         if entries and looks_like_server_root(entries) then
             return normalize(candidate), entries
         end
-        last_err = err
+        if entries then
+            last_err = "NotServerRoot:" .. (candidate == "" and "/" or candidate) .. " [" .. entry_names(entries) .. "]"
+        else
+            last_err = err
+        end
     end
-    return nil, last_err or "ServerRootNotFound"
+    local found, found_entries_or_err = find_server_root(branch, requested ~= "" and requested or "", 4, {})
+    if found then
+        return found, found_entries_or_err
+    end
+    return nil, found_entries_or_err or last_err or "ServerRootNotFound"
 end
 
 local function collect_remote(remote_root, relative, branch, files)
@@ -350,9 +590,10 @@ local function print_usage()
     print("HyperCubeServer GitHub updater")
     print("")
     print("Usage:")
-    print("  update_server.lua [--branch main] [--root computer/0] [--yes] [--dry-run]")
+    print("  update_server.lua [--branch main] [--root computer/0] [--token TOKEN] [--yes] [--dry-run]")
     print("")
     print("Repo: https://github.com/" .. REPO_OWNER .. "/" .. REPO_NAME)
+    print("Put a GitHub token in github_token to avoid rate limits.")
 end
 
 if has_flag("--help") or has_flag("-h") then
@@ -371,20 +612,43 @@ print("Repo: " .. REPO_OWNER .. "/" .. REPO_NAME)
 print("Branch: " .. branch)
 print("")
 
-local remote_root, root_entries_or_err = detect_remote_root(branch, requested_root)
-if not remote_root and requested_branch == "" and branch ~= "master" then
+local tree, tree_err = fetch_tree(branch)
+local remote_root, root_entries_or_err
+if tree then
+    remote_root, root_entries_or_err = detect_remote_root_from_tree(tree, requested_root)
+else
+    root_entries_or_err = tree_err
+end
+if not remote_root
+    and requested_branch == ""
+    and branch ~= "master"
+    and not tostring(root_entries_or_err or ""):lower():find("rate limit", 1, true) then
     branch = "master"
     print("Branch main not found; trying master...")
-    remote_root, root_entries_or_err = detect_remote_root(branch, requested_root)
+    tree, tree_err = fetch_tree(branch)
+    if tree then
+        remote_root, root_entries_or_err = detect_remote_root_from_tree(tree, requested_root)
+    else
+        root_entries_or_err = tree_err
+    end
 end
 if not remote_root then
     print("Could not find server root: " .. tostring(root_entries_or_err))
+    if tostring(root_entries_or_err or ""):lower():find("rate limit", 1, true) then
+        print("Create a GitHub token and run: update_server.lua --token <token> --dry-run")
+        print("Or save it in a local file named github_token.")
+    end
     print("Try: update_server.lua --root computer/0")
     return
 end
 print("Remote root: " .. (remote_root == "" and "/" or remote_root))
 
-local files, collect_err = collect_package(remote_root, branch, root_entries_or_err)
+local files, collect_err
+if tree then
+    files, collect_err = collect_package_from_tree(remote_root, branch, tree)
+else
+    files, collect_err = collect_package(remote_root, branch, root_entries_or_err)
+end
 if not files then
     print("Download failed: " .. tostring(collect_err))
     return

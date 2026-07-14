@@ -46,6 +46,7 @@ Useful options:
 - `update_server.lua --yes`: Update without the confirmation prompt.
 - `update_server.lua --branch main`: Select a branch.
 - `update_server.lua --root computer/0`: Force the server source root if auto-detection fails.
+- `update_server.lua --token <token>`: Use a GitHub token to avoid API rate limits. You can also store the token in a local `github_token` file.
 
 The updater replaces server source paths such as `Kernal`, `appstore`, `installer`, `docs`, `init.lua`, and `startup.lua`, while preserving local `logs`, `user`, `hypercube_db`, disk records, and admin tokens. Restart the server after updating.
 
