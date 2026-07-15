@@ -91,4 +91,16 @@ function app.on_key(ctx)
     return false
 end
 
+function app.on_touch(ctx)
+    if ctx.button_id == "shutdown" then
+        if api.device and api.device.shutdown then
+            api.device.shutdown()
+        elseif os and os.shutdown then
+            os.shutdown()
+        end
+        return true
+    end
+    return false
+end
+
 return app

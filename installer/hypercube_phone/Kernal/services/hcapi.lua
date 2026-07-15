@@ -640,6 +640,20 @@ local function make_dev_api(tphone)
     }
 end
 
+local function make_device_api(tphone)
+    return {
+        shutdown = function()
+            if tphone and tphone.shutdown then
+                tphone.shutdown("settings")
+            end
+            if os.shutdown then
+                os.shutdown()
+            end
+            return false, "ShutdownUnavailable"
+        end,
+    }
+end
+
 function hcapi.create(tphone, app_id)
     if not tphone.hcfs then
         tphone.hcfs = UserFS.new(tphone.identity or {})
@@ -657,6 +671,7 @@ function hcapi.create(tphone, app_id)
         phone = make_phone_api(tphone),
         fs = make_fs_api(tphone.hcfs, app_id),
         dev = make_dev_api(tphone),
+        device = make_device_api(tphone),
         apps = {
             install = function(package)
                 if not tphone.install_app then

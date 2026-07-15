@@ -271,6 +271,52 @@ local function fetch_tree(branch)
     return decoded
 end
 
+local function commit_url(branch)
+    return "https://api.github.com/repos/" .. REPO_OWNER .. "/" .. REPO_NAME
+        .. "/commits/" .. encode_segment(branch)
+end
+
+local function fetch_commit_sha(branch)
+    local body, err = http_get(commit_url(branch))
+    if not body then
+        return nil, err
+    end
+    local decoded, json_err = decode_json(body)
+    if not decoded then
+        return nil, json_err
+    end
+    if type(decoded) == "table" and decoded.message then
+        return nil, decoded.message
+    end
+    if not decoded.sha or decoded.sha == "" then
+        return nil, "CommitShaMissing"
+    end
+    return decoded.sha
+end
+
+local function compare_url(base_sha, head_sha)
+    return "https://api.github.com/repos/" .. REPO_OWNER .. "/" .. REPO_NAME
+        .. "/compare/" .. encode_segment(base_sha) .. "..." .. encode_segment(head_sha)
+end
+
+local function fetch_compare(base_sha, head_sha)
+    local body, err = http_get(compare_url(base_sha, head_sha))
+    if not body then
+        return nil, err
+    end
+    local decoded, json_err = decode_json(body)
+    if not decoded then
+        return nil, json_err
+    end
+    if type(decoded) == "table" and decoded.message then
+        return nil, decoded.message
+    end
+    if type(decoded.files) ~= "table" then
+        return nil, "CompareFilesMissing"
+    end
+    return decoded
+end
+
 local function tree_has_path(tree, path, kind)
     path = normalize(path)
     for _, entry in ipairs(tree and tree.tree or {}) do
@@ -568,19 +614,204 @@ local function write_file(path, data)
     return true
 end
 
-local function write_install_record(branch, remote_root, files)
+local function read_file(path)
+    if not fs.exists(path) or not fs.open then
+        return nil
+    end
+    local handle = fs.open(path, "rb")
+    if not handle then
+        return nil
+    end
+    local data = handle.readAll()
+    handle.close()
+    return data or ""
+end
+
+local function split_lines(text)
+    text = tostring(text or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
+    if text == "" then
+        return {}
+    end
+    local lines = {}
+    if text:sub(-1) ~= "\n" then
+        text = text .. "\n"
+    end
+    for line in text:gmatch("(.-)\n") do
+        lines[#lines + 1] = line
+    end
+    return lines
+end
+
+local function read_install_record()
+    local data = read_file("hypercube_server_install")
+    if not data or data == "" or not textutils or not textutils.unserialize then
+        return nil
+    end
+    local ok, record = pcall(textutils.unserialize, data)
+    if not ok or type(record) ~= "table" then
+        return nil
+    end
+    return record
+end
+
+local function remote_relative(remote_root, remote_path)
+    remote_root = normalize(remote_root)
+    remote_path = normalize(remote_path)
+    if remote_root == "" then
+        return remote_path
+    end
+    local prefix = remote_root .. "/"
+    if remote_path:sub(1, #prefix) ~= prefix then
+        return nil
+    end
+    return remote_path:sub(#prefix + 1)
+end
+
+local function apply_unified_patch(path, patch)
+    patch = tostring(patch or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
+    if patch == "" then
+        return false, "EmptyPatch:" .. tostring(path)
+    end
+
+    local old_lines = split_lines(read_file(path) or "")
+    local out = {}
+    local source = 1
+    local patch_lines = split_lines(patch)
+    local index = 1
+
+    while index <= #patch_lines do
+        local line = patch_lines[index]
+        local old_start = line:match("^@@ %-(%d+)")
+        if old_start then
+            old_start = tonumber(old_start) or 1
+            if old_start < 1 then
+                old_start = 1
+            end
+            while source < old_start and source <= #old_lines do
+                out[#out + 1] = old_lines[source]
+                source = source + 1
+            end
+            index = index + 1
+            while index <= #patch_lines and not patch_lines[index]:match("^@@ ") do
+                line = patch_lines[index]
+                local marker = line:sub(1, 1)
+                local content = line:sub(2)
+                if marker == " " then
+                    if old_lines[source] ~= content then
+                        return false, "PatchContextMismatch:" .. tostring(path)
+                    end
+                    out[#out + 1] = content
+                    source = source + 1
+                elseif marker == "-" then
+                    if old_lines[source] ~= content then
+                        return false, "PatchRemoveMismatch:" .. tostring(path)
+                    end
+                    source = source + 1
+                elseif marker == "+" then
+                    out[#out + 1] = content
+                elseif marker == "\\" then
+                    -- Ignore "\ No newline at end of file" metadata.
+                else
+                    return false, "UnsupportedPatchLine:" .. tostring(path)
+                end
+                index = index + 1
+            end
+        else
+            index = index + 1
+        end
+    end
+
+    while source <= #old_lines do
+        out[#out + 1] = old_lines[source]
+        source = source + 1
+    end
+
+    return write_file(path, table.concat(out, "\n") .. "\n")
+end
+
+local function patch_changes_from_compare(compare, remote_root)
+    local changes = {}
+    local patch_bytes = 0
+    for _, file in ipairs(compare and compare.files or {}) do
+        local relative = remote_relative(remote_root, file.filename)
+        local previous_relative = file.previous_filename and remote_relative(remote_root, file.previous_filename) or nil
+        local include_new = relative and include_relative(relative)
+        local include_old = previous_relative and include_relative(previous_relative)
+
+        if include_new or include_old then
+            if file.status == "removed" or (file.status == "renamed" and include_old and not include_new) then
+                changes[#changes + 1] = {
+                    status = "removed",
+                    path = previous_relative or relative,
+                }
+            else
+                if file.status == "renamed" and include_old and include_new and previous_relative ~= relative then
+                    changes[#changes + 1] = {
+                        status = "renamed",
+                        from = previous_relative,
+                        path = relative,
+                    }
+                end
+                if file.status == "renamed" and include_old and include_new and (not file.patch or file.patch == "") then
+                    -- Pure rename. Nothing else to patch after moving the file.
+                elseif not file.patch or file.patch == "" then
+                    return nil, "PatchMissing:" .. tostring(file.filename)
+                else
+                    patch_bytes = patch_bytes + #file.patch
+                    changes[#changes + 1] = {
+                        status = file.status or "modified",
+                        path = relative,
+                        patch = file.patch,
+                    }
+                end
+            end
+        end
+    end
+    return changes, patch_bytes
+end
+
+local function apply_patch_changes(changes)
+    for index, change in ipairs(changes or {}) do
+        if change.status == "removed" then
+            if fs.exists(change.path) then
+                fs.delete(change.path)
+            end
+        elseif change.status == "renamed" then
+            if fs.exists(change.from) then
+                ensure_parent(change.path)
+                if fs.exists(change.path) then
+                    fs.delete(change.path)
+                end
+                fs.move(change.from, change.path)
+            end
+        else
+            local ok, err = apply_unified_patch(change.path, change.patch)
+            if not ok then
+                return false, err
+            end
+        end
+        if index % 10 == 0 or index == #changes then
+            print("Patched " .. tostring(index) .. "/" .. tostring(#changes))
+        end
+    end
+    return true
+end
+
+local function write_install_record(branch, remote_root, files_or_count, commit_sha)
     local handle = fs.open("hypercube_server_install", "w")
     if not handle then
         return false
     end
+    local file_count = type(files_or_count) == "table" and #files_or_count or tonumber(files_or_count) or 0
     handle.write(textutils.serialize({
         os = "HyperCubeServer",
         installed_at = now(),
-        files = #files,
+        files = file_count,
         source = "github",
         repo = REPO_OWNER .. "/" .. REPO_NAME,
         branch = branch,
         remote_root = remote_root,
+        commit_sha = commit_sha,
     }))
     handle.close()
     return true
@@ -591,7 +822,11 @@ local function print_usage()
     print("")
     print("Usage:")
     print("  update_server.lua [--branch main] [--root computer/0] [--token TOKEN] [--yes] [--dry-run]")
+    print("  update_server.lua --full")
+    print("  update_server.lua --patch-only")
     print("")
+    print("By default, GitHub installs with a saved commit SHA update by diff patch.")
+    print("Use --full to force a full source refresh.")
     print("Repo: https://github.com/" .. REPO_OWNER .. "/" .. REPO_NAME)
     print("Put a GitHub token in github_token to avoid rate limits.")
 end
@@ -642,6 +877,88 @@ if not remote_root then
     return
 end
 print("Remote root: " .. (remote_root == "" and "/" or remote_root))
+
+local head_sha, head_sha_err = fetch_commit_sha(branch)
+if head_sha then
+    print("Remote commit: " .. tostring(head_sha):sub(1, 12))
+else
+    print("Remote commit: unknown (" .. tostring(head_sha_err) .. ")")
+end
+
+local install_record = read_install_record()
+local can_try_patch = not has_flag("--full")
+    and head_sha
+    and install_record
+    and install_record.source == "github"
+    and install_record.repo == REPO_OWNER .. "/" .. REPO_NAME
+    and install_record.commit_sha
+
+if can_try_patch then
+    local base_sha = tostring(install_record.commit_sha)
+    if base_sha == head_sha then
+        print("")
+        print("Already up to date.")
+        return
+    end
+
+    print("Base commit: " .. base_sha:sub(1, 12))
+    local compare, compare_err = fetch_compare(base_sha, head_sha)
+    local changes, patch_bytes, patch_build_err
+    if compare then
+        changes, patch_bytes = patch_changes_from_compare(compare, remote_root)
+        if not changes then
+            patch_build_err = patch_bytes
+        end
+    end
+
+    if compare and changes then
+        print("Mode: patch")
+        print("Changed files: " .. tostring(#changes))
+        print("Patch bytes: " .. tostring(patch_bytes or 0))
+
+        if has_flag("--dry-run") then
+            print("")
+            print("Dry run complete. No files changed.")
+            return
+        end
+
+        if not has_flag("--yes") and not has_flag("-y") then
+            print("")
+            print("This will apply a GitHub diff patch and preserve user data, logs, and disk DB.")
+            write("Continue? [y/N] ")
+            local answer = read()
+            if tostring(answer or ""):lower() ~= "y" then
+                print("Cancelled.")
+                return
+            end
+        end
+
+        print("Applying patch...")
+        local ok, patch_err = apply_patch_changes(changes)
+        if not ok then
+            print("Patch failed: " .. tostring(patch_err))
+            print("Run update_server.lua --full to replace source files from GitHub.")
+            return
+        end
+
+        write_install_record(branch, remote_root, #changes, head_sha)
+        print("")
+        print("Patch update complete.")
+        print("Run 'reboot' or restart this computer.")
+        return
+    end
+
+    print("Patch unavailable: " .. tostring(compare_err or patch_build_err or "PatchBuildFailed"))
+    if has_flag("--patch-only") then
+        return
+    end
+    print("Falling back to full source refresh.")
+elseif has_flag("--patch-only") then
+    print("Patch unavailable: no previous GitHub commit SHA in hypercube_server_install.")
+    return
+elseif not has_flag("--full") then
+    print("Patch unavailable: no previous GitHub commit SHA; using full source refresh.")
+end
 
 local files, collect_err
 if tree then
@@ -697,7 +1014,7 @@ for index, file in ipairs(files) do
     end
 end
 
-write_install_record(branch, remote_root, files)
+write_install_record(branch, remote_root, files, head_sha)
 print("")
 print("Update complete.")
 print("Run 'reboot' or restart this computer.")

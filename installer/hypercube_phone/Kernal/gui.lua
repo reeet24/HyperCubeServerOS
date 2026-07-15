@@ -577,8 +577,6 @@ function gui.run(tphone)
                 local button_id = hit_button(state.buttons, event.x, event.y)
                 if button_id == "home" then
                     set_active_app(tphone, state, nil)
-                elseif button_id == "shutdown" then
-                    state.running = false
                 elseif not state.active_app and button_id == "home_prev_page" then
                     move_home_page(state, -1)
                 elseif not state.active_app and button_id == "home_next_page" then
@@ -618,8 +616,6 @@ function gui.run(tphone)
                 local key = event.raw and event.raw[2]
                 if event.type == "key_up" then
                     -- Apps use key_up for chords; the launcher has no key-up action.
-                elseif key == keys.q then
-                    state.running = false
                 elseif key == keys.backspace or key == keys.home then
                     set_active_app(tphone, state, nil)
                     gui.render(tphone, state)
