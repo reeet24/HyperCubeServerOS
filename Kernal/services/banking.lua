@@ -23,8 +23,21 @@ local function account_key(owner)
     return "bank:account:" .. tostring(owner)
 end
 
+local function account_owner_key(owner, account_name)
+    owner = tostring(owner or "")
+    account_name = tostring(account_name or "main")
+    if account_name == "" or account_name == "main" then
+        return owner
+    end
+    return owner .. ":" .. account_name
+end
+
 local function username_key(username)
     return "bank:username:" .. tostring(username)
+end
+
+local function account_index_key(owner)
+    return "bank:accounts:" .. tostring(owner)
 end
 
 local function minecraft_key(minecraft_name)
@@ -54,6 +67,18 @@ local function normalize_username(username)
         return nil, "InvalidUsername"
     end
     return username
+end
+
+local function normalize_account_name(account_name)
+    account_name = tostring(account_name or "main"):lower():gsub("%s+", "")
+    account_name = account_name:gsub("[^%w_%-%.]", "")
+    if account_name == "" then
+        account_name = "main"
+    end
+    if #account_name > 32 then
+        return nil, "InvalidAccountName"
+    end
+    return account_name
 end
 
 local function normalize_minecraft_name(minecraft_name)
@@ -140,6 +165,8 @@ local function public_account(record)
         account_id = record.account_id,
         owner = record.owner,
         username = record.username,
+        account_name = record.account_name or "main",
+        default = (record.account_name or "main") == "main",
         minecraft_name = record.minecraft_name,
         balance = record.balance or 0,
         currency = record.currency or "TC",
@@ -148,18 +175,23 @@ local function public_account(record)
     }
 end
 
-local function resolve_account(database, owner, username)
+local function resolve_account(database, owner, username, account_name)
     owner = tostring(owner or "")
     username = tostring(username or "")
+    account_name = normalize_account_name(account_name)
+    if not account_name then
+        return nil, nil
+    end
 
     if owner ~= "" then
-        local direct = database:get(account_key(owner))
+        local direct_owner = account_owner_key(owner, account_name)
+        local direct = database:get(account_key(direct_owner))
         if direct then
-            return owner, direct
+            return direct_owner, direct
         end
     end
 
-    if username ~= "" then
+    if username ~= "" and account_name == "main" then
         local normalized = normalize_username(username)
         if normalized then
             local link = database:get(username_key(normalized))
@@ -177,6 +209,30 @@ local function resolve_account(database, owner, username)
     end
 
     return nil, nil
+end
+
+local function add_to_account_index(database, owner, account_name, account_owner)
+    local index = database:get(account_index_key(owner)) or {
+        owner = owner,
+        accounts = {},
+    }
+    index.accounts = index.accounts or {}
+    local found = false
+    for _, entry in ipairs(index.accounts) do
+        if entry.account_name == account_name then
+            entry.account_owner = account_owner
+            found = true
+            break
+        end
+    end
+    if not found then
+        index.accounts[#index.accounts + 1] = {
+            account_name = account_name,
+            account_owner = account_owner,
+        }
+    end
+    index.updated_at = now()
+    database:set(account_index_key(owner), index)
 end
 
 local function append_history(database, owner, entry)
@@ -208,7 +264,7 @@ function BankService:require_database()
     return true
 end
 
-function BankService:get_account(owner, username)
+function BankService:get_account(owner, username, account_name)
     local ok, err = self:require_database()
     if not ok then
         return false, err
@@ -217,11 +273,16 @@ function BankService:get_account(owner, username)
     if not owner then
         return false, err
     end
-    local _, account = resolve_account(self.database, owner, username)
+    local account_name_err
+    account_name, account_name_err = normalize_account_name(account_name)
+    if not account_name then
+        return false, account_name_err
+    end
+    local _, account = resolve_account(self.database, owner, username, account_name)
     return true, account
 end
 
-function BankService:open(owner, username, minecraft_name)
+function BankService:open(owner, username, minecraft_name, account_name)
     local ok, err = self:require_database()
     if not ok then
         return false, err
@@ -235,6 +296,12 @@ function BankService:open(owner, username, minecraft_name)
     if not username then
         username = owner
     end
+    local account_name_err
+    account_name, account_name_err = normalize_account_name(account_name)
+    if not account_name then
+        return false, account_name_err
+    end
+    local account_owner = account_owner_key(owner, account_name)
     local minecraft_err
     minecraft_name, minecraft_err = normalize_minecraft_name(minecraft_name)
     if not minecraft_name then
@@ -246,7 +313,7 @@ function BankService:open(owner, username, minecraft_name)
         return false, "MinecraftNameInUse"
     end
 
-    local existing_owner, existing = resolve_account(self.database, owner, username)
+    local existing_owner, existing = resolve_account(self.database, owner, username, account_name)
     if existing then
         local changed = false
         if not existing.minecraft_name then
@@ -257,13 +324,15 @@ function BankService:open(owner, username, minecraft_name)
             existing.updated_at = now()
             self.database:set(account_key(existing_owner), existing)
         end
-        self.database:set(minecraft_key(minecraft_lookup), {
-            owner = existing_owner,
-            username = existing.username or username,
-            minecraft_name = existing.minecraft_name or minecraft_name,
-        })
-        if existing_owner ~= owner then
-            self.database:set(account_key(owner), existing)
+        if account_name == "main" then
+            self.database:set(minecraft_key(minecraft_lookup), {
+                owner = existing_owner,
+                username = existing.username or username,
+                minecraft_name = existing.minecraft_name or minecraft_name,
+            })
+        end
+        if existing_owner ~= account_owner then
+            self.database:set(account_key(account_owner), existing)
         end
         return true, public_account(existing)
     end
@@ -272,6 +341,8 @@ function BankService:open(owner, username, minecraft_name)
         account_id = "tb_" .. tostring(now()) .. "_" .. tostring(math.floor((os.clock() or 0) * 1000)),
         owner = owner,
         username = username,
+        account_name = account_name,
+        account_owner = account_owner,
         minecraft_name = minecraft_name,
         balance = self.starting_balance,
         currency = "TC",
@@ -286,22 +357,25 @@ function BankService:open(owner, username, minecraft_name)
         },
     }
 
-    local set_ok, set_err = self.database:set(account_key(owner), record)
+    local set_ok, set_err = self.database:set(account_key(account_owner), record)
     if not set_ok then
         return false, set_err
     end
-    if username then
+    if username and account_name == "main" then
         self.database:set(username_key(username), {
             owner = owner,
             username = username,
         })
     end
-    self.database:set(minecraft_key(minecraft_lookup), {
-        owner = owner,
-        username = username,
-        minecraft_name = minecraft_name,
-    })
-    append_history(self.database, owner, {
+    if account_name == "main" then
+        self.database:set(minecraft_key(minecraft_lookup), {
+            owner = owner,
+            username = username,
+            minecraft_name = minecraft_name,
+        })
+    end
+    add_to_account_index(self.database, owner, account_name, account_owner)
+    append_history(self.database, account_owner, {
         id = record.account_id .. ":open",
         kind = "open",
         direction = "in",
@@ -372,15 +446,15 @@ function BankService:close(owner, reason, closed_by)
     return true, closed
 end
 
-function BankService:status(owner, username)
-    local ok, record = self:get_account(owner, username)
+function BankService:status(owner, username, account_name)
+    local ok, record = self:get_account(owner, username, account_name)
     if not ok then
         return false, record
     end
     return true, public_account(record)
 end
 
-function BankService:history(owner, username)
+function BankService:history(owner, username, account_name)
     local ok, err = self:require_database()
     if not ok then
         return false, err
@@ -389,7 +463,12 @@ function BankService:history(owner, username)
     if not owner then
         return false, err
     end
-    local resolved_owner = resolve_account(self.database, owner, username) or owner
+    local account_name_err
+    account_name, account_name_err = normalize_account_name(account_name)
+    if not account_name then
+        return false, account_name_err
+    end
+    local resolved_owner = resolve_account(self.database, owner, username, account_name) or account_owner_key(owner, account_name)
     return true, self.database:get(history_key(resolved_owner)) or {
         owner = resolved_owner,
         transactions = {},
@@ -418,7 +497,7 @@ function BankService:resolve_recipient(identifier)
     return nil, "RecipientNotFound"
 end
 
-function BankService:transfer(owner, username, to_identifier, amount, memo)
+function BankService:transfer(owner, username, to_identifier, amount, memo, account_name)
     local ok, err = self:require_database()
     if not ok then
         return false, err
@@ -433,7 +512,13 @@ function BankService:transfer(owner, username, to_identifier, amount, memo)
     end
     memo = tostring(memo or "Transfer"):sub(1, 80)
 
-    local sender_owner, sender = resolve_account(self.database, owner, username)
+    local account_name_err
+    account_name, account_name_err = normalize_account_name(account_name)
+    if not account_name then
+        return false, account_name_err
+    end
+
+    local sender_owner, sender = resolve_account(self.database, owner, username, account_name)
     if not sender then
         return false, "AccountRequired"
     end
@@ -535,7 +620,7 @@ function BankService:credit(owner, amount, memo, source)
     return true, public_account(account)
 end
 
-function BankService:debit(owner, amount, memo, sink)
+function BankService:debit(owner, amount, memo, sink, username, account_name)
     local ok, err = self:require_database()
     if not ok then
         return false, err
@@ -549,7 +634,7 @@ function BankService:debit(owner, amount, memo, sink)
         return false, err
     end
 
-    local account = self.database:get(account_key(owner))
+    local account_owner, account = resolve_account(self.database, owner, username, account_name)
     if not account then
         return false, "AccountRequired"
     end
@@ -559,11 +644,11 @@ function BankService:debit(owner, amount, memo, sink)
 
     account.balance = subtract_amount(account.balance, amount)
     account.updated_at = now()
-    local set_ok, set_err = self.database:set(account_key(owner), account)
+    local set_ok, set_err = self.database:set(account_key(account_owner), account)
     if not set_ok then
         return false, set_err
     end
-    append_history(self.database, owner, {
+    append_history(self.database, account_owner, {
         id = "debit_" .. tostring(now()),
         kind = "debit",
         direction = "out",

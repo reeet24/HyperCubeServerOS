@@ -57,7 +57,8 @@ local function ensure_state(state)
     state.ready = true
     state.loaded = false
     state.view = "loading"
-    state.focus = "minecraft_name"
+    state.focus = "account_name"
+    state.account_name = api.fs.read("bank_account_name.txt") or "main"
     state.minecraft_name = api.fs.read("minecraft_name.txt") or ""
     state.transfer_to = ""
     state.transfer_amount = ""
@@ -70,6 +71,7 @@ end
 local function refresh(state)
     local reply, err = request({
         type = "bank.status",
+        account_name = state.account_name,
     }, "bank.status.result")
 
     state.loaded = true
@@ -91,6 +93,10 @@ local function refresh(state)
 end
 
 local function open_account(state)
+    local account_name = field_value(state, "account_name")
+    if account_name == "" then
+        account_name = "main"
+    end
     local minecraft_name = field_value(state, "minecraft_name")
     if minecraft_name == "" then
         state.error = "Minecraft name required"
@@ -99,9 +105,11 @@ local function open_account(state)
     end
     local reply, err = request({
         type = "bank.open",
+        account_name = account_name,
         minecraft_name = minecraft_name,
     }, "bank.open.result")
     if reply and reply.ok then
+        api.fs.write("bank_account_name.txt", account_name)
         api.fs.write("minecraft_name.txt", minecraft_name)
         state.account = reply.result
         state.view = "home"
@@ -126,6 +134,7 @@ local function transfer(state)
     end
     local reply, err = request({
         type = "bank.transfer",
+        account_name = state.account_name,
         to = state.transfer_to,
         amount = amount,
         memo = state.transfer_memo,
@@ -153,15 +162,17 @@ end
 local function render_open(ctx, state)
     local has_account = state.account and state.account.open
     write_line(ctx, 0, has_account and "Complete Bank Setup" or "Open Bank of Ba$h", C.yellow)
-    write_line(ctx, 2, "Minecraft username", C.lightGray)
-    draw_field(ctx, 3, "Name", state.minecraft_name, state.focus == "minecraft_name")
-    write_line(ctx, 5, "Required for account review.", C.lightGray)
+    write_line(ctx, 2, "Account", C.lightGray)
+    draw_field(ctx, 3, "Acct", state.account_name, state.focus == "account_name")
+    write_line(ctx, 4, "Minecraft username", C.lightGray)
+    draw_field(ctx, 5, "Name", state.minecraft_name, state.focus == "minecraft_name")
+    write_line(ctx, 7, "Use main for phone service.", C.lightGray)
 
-    ctx.buttons.bank_open = api.screen.button("bank_open", ctx.x, ctx.y + 7, 9, has_account and "Save" or "Open", {
+    ctx.buttons.bank_open = api.screen.button("bank_open", ctx.x, ctx.y + 9, 9, has_account and "Save" or "Open", {
         fg = C.white,
         bg = C.green,
     })
-    ctx.buttons.bank_refresh = api.screen.button("bank_refresh", ctx.x + 10, ctx.y + 7, 9, "Refresh", {
+    ctx.buttons.bank_refresh = api.screen.button("bank_refresh", ctx.x + 10, ctx.y + 9, 9, "Refresh", {
         fg = C.white,
         bg = C.blue,
     })
@@ -172,14 +183,20 @@ local function render_home(ctx, state)
     write_line(ctx, 0, "Bank of Ba$h", C.yellow)
     write_line(ctx, 2, "Balance", C.lightGray)
     write_line(ctx, 3, tostring(account.balance or 0) .. " " .. tostring(account.currency or "TC"), C.white)
-    write_line(ctx, 5, "Minecraft", C.lightGray)
-    write_line(ctx, 6, tostring(account.minecraft_name or "missing"), account.minecraft_name and C.white or C.red)
+    write_line(ctx, 5, "Account", C.lightGray)
+    write_line(ctx, 6, tostring(account.account_name or state.account_name or "main"), C.white)
+    write_line(ctx, 7, "Minecraft", C.lightGray)
+    write_line(ctx, 8, tostring(account.minecraft_name or "missing"), account.minecraft_name and C.white or C.red)
 
-    ctx.buttons.bank_transfer = api.screen.button("bank_transfer", ctx.x, ctx.y + 8, 10, "Transfer", {
+    ctx.buttons.bank_transfer = api.screen.button("bank_transfer", ctx.x, ctx.y + 10, 8, "Transfer", {
         fg = C.white,
         bg = C.green,
     })
-    ctx.buttons.bank_refresh = api.screen.button("bank_refresh", ctx.x + 11, ctx.y + 8, 9, "Refresh", {
+    ctx.buttons.bank_account = api.screen.button("bank_account", ctx.x + 9, ctx.y + 10, 7, "Acct", {
+        fg = C.white,
+        bg = C.gray,
+    })
+    ctx.buttons.bank_refresh = api.screen.button("bank_refresh", ctx.x + 17, ctx.y + 10, 8, "Refresh", {
         fg = C.white,
         bg = C.blue,
     })
@@ -234,7 +251,11 @@ local function cycle_focus(state)
             state.focus = "transfer_to"
         end
     else
-        state.focus = "minecraft_name"
+        if state.focus == "account_name" then
+            state.focus = "minecraft_name"
+        else
+            state.focus = "account_name"
+        end
     end
 end
 
@@ -252,6 +273,12 @@ function app.on_touch(ctx)
     elseif ctx.button_id == "bank_transfer" then
         state.view = "transfer"
         state.focus = "transfer_to"
+        state.error = nil
+        state.status = nil
+        return true
+    elseif ctx.button_id == "bank_account" then
+        state.view = "open"
+        state.focus = "account_name"
         state.error = nil
         state.status = nil
         return true
@@ -275,6 +302,8 @@ local function append_char(state, char)
     end
     if focus == "minecraft_name" then
         char = tostring(char or ""):gsub("[^%w_]", "")
+    elseif focus == "account_name" then
+        char = tostring(char or ""):lower():gsub("[^%w_%-%.]", "")
     elseif focus == "transfer_amount" then
         char = tostring(char or ""):gsub("[^%d%.]", "")
     end

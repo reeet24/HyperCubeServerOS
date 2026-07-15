@@ -133,19 +133,20 @@ function banking_server.install(hypercube)
 
         local owner = message_identity(sender, message, network.clients)
         local username = message_username(sender, message, network.clients)
+        local account_name = message.account_name or message.account or message.name
         local ok, result = false, "UnknownBankRequest"
 
         if message.type == "bank.open" then
-            ok, result = bank:open(owner, username, message.minecraft_name or message.minecraft or message.mc_name)
+            ok, result = bank:open(owner, username, message.minecraft_name or message.minecraft or message.mc_name, account_name)
             reply(rednet, sender, network.protocol, "bank.open.result", ok, result)
         elseif message.type == "bank.status" then
-            ok, result = bank:status(owner, username)
+            ok, result = bank:status(owner, username, account_name)
             reply(rednet, sender, network.protocol, "bank.status.result", ok, result)
         elseif message.type == "bank.history" then
-            ok, result = bank:history(owner, username)
+            ok, result = bank:history(owner, username, account_name)
             reply(rednet, sender, network.protocol, "bank.history.result", ok, result)
         elseif message.type == "bank.transfer" then
-            ok, result = bank:transfer(owner, username, message.to, message.amount, message.memo)
+            ok, result = bank:transfer(owner, username, message.to, message.amount, message.memo, account_name)
             reply(rednet, sender, network.protocol, "bank.transfer.result", ok, result)
         elseif message.type == "bank.credit" then
             ok, result = false, "PhysicalDepositNotEnabled"

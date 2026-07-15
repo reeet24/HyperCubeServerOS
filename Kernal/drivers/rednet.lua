@@ -127,7 +127,11 @@ local function wait_for_announce(self, timeout)
 end
 
 local function message_identity(sender, message, clients)
-    return message.tesserac_id or (clients[sender] and clients[sender].tesserac_id)
+    return message.tesserac_id or (clients and clients[sender] and clients[sender].tesserac_id)
+end
+
+local function message_username(sender, message, clients)
+    return message.username or (clients and clients[sender] and clients[sender].username)
 end
 
 local function session_identity(sender, message, clients)
@@ -1081,7 +1085,10 @@ function RednetDriver:poll(timeout)
             if self.phone then
                 ok, result = require_device_scope(self, sender, message, "phone.access")
                 if ok then
-                    ok, result = self.phone:status(message_identity(sender, message, self.clients))
+                    ok, result = self.phone:status(
+                        message_identity(sender, message, self.clients),
+                        message_username(sender, message, self.clients)
+                    )
                 end
             end
             reply_service(sender, self.protocol, "phone.status.result", ok, result)
@@ -1091,7 +1098,10 @@ function RednetDriver:poll(timeout)
             if self.phone then
                 ok, result = require_device_scope(self, sender, message, "phone.access")
                 if ok then
-                    ok, result = self.phone:subscribe(message_identity(sender, message, self.clients))
+                    ok, result = self.phone:subscribe(
+                        message_identity(sender, message, self.clients),
+                        message_username(sender, message, self.clients)
+                    )
                 end
             end
             reply_service(sender, self.protocol, "phone.subscribe.result", ok, result)
@@ -1101,7 +1111,10 @@ function RednetDriver:poll(timeout)
             if self.phone then
                 ok, result = require_device_scope(self, sender, message, "phone.access")
                 if ok then
-                    ok, result = self.phone:pay(message_identity(sender, message, self.clients))
+                    ok, result = self.phone:pay(
+                        message_identity(sender, message, self.clients),
+                        message_username(sender, message, self.clients)
+                    )
                 end
             end
             reply_service(sender, self.protocol, "phone.pay.result", ok, result)

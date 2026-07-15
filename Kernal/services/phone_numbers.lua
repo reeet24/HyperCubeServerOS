@@ -110,11 +110,11 @@ function PhoneService:set_bank(bank)
     return self
 end
 
-function PhoneService:require_bank_account(owner)
+function PhoneService:require_bank_account(owner, username)
     if not self.bank or not self.bank.status then
         return false, "BankAccountRequired"
     end
-    local ok, account = self.bank:status(owner)
+    local ok, account = self.bank:status(owner, username)
     if not ok then
         if account == "AccountRequired" or account == "AuthRequired" then
             return false, "BankAccountRequired"
@@ -127,15 +127,15 @@ function PhoneService:require_bank_account(owner)
     return true, account
 end
 
-function PhoneService:charge_renewal(owner)
-    local ok, account = self:require_bank_account(owner)
+function PhoneService:charge_renewal(owner, username)
+    local ok, account = self:require_bank_account(owner, username)
     if not ok then
         return false, account
     end
     if not self.bank.debit then
         return false, "BankAccountRequired"
     end
-    local charged, result = self.bank:debit(owner, self.weekly_bill, "Tesserac Phone weekly service", "phone")
+    local charged, result = self.bank:debit(owner, self.weekly_bill, "Tesserac Phone weekly service", "phone", username)
     if not charged then
         if result == "AccountRequired" then
             return false, "BankAccountRequired"
@@ -145,7 +145,7 @@ function PhoneService:charge_renewal(owner)
     return true, result or account
 end
 
-function PhoneService:status(owner)
+function PhoneService:status(owner, username)
     local ok, db_err = self:require_database()
     if not ok then
         return false, db_err
@@ -170,12 +170,12 @@ function PhoneService:status(owner)
     record.active = active
     record.bill_due = not active
     record.weekly_bill = self.weekly_bill
-    local bank_ok = self:require_bank_account(owner)
+    local bank_ok = self:require_bank_account(owner, username)
     record.bank_account_linked = bank_ok == true
     return true, record
 end
 
-function PhoneService:subscribe(owner)
+function PhoneService:subscribe(owner, username)
     local ok, db_err = self:require_database()
     if not ok then
         return false, db_err
@@ -187,10 +187,10 @@ function PhoneService:subscribe(owner)
 
     local record = self.database:get(account_key(owner))
     if record and record.number then
-        return self:pay(owner)
+        return self:pay(owner, username)
     end
 
-    local bank_ok, bank_err = self:require_bank_account(owner)
+    local bank_ok, bank_err = self:require_bank_account(owner, username)
     if not bank_ok then
         return false, bank_err
     end
@@ -243,7 +243,7 @@ function PhoneService:subscribe(owner)
     return true, record
 end
 
-function PhoneService:pay(owner)
+function PhoneService:pay(owner, username)
     local ok, db_err = self:require_database()
     if not ok then
         return false, db_err
@@ -258,7 +258,7 @@ function PhoneService:pay(owner)
         return false, "NoPhoneNumber"
     end
 
-    local charge_ok, charge_err = self:charge_renewal(owner)
+    local charge_ok, charge_err = self:charge_renewal(owner, username)
     if not charge_ok then
         return false, charge_err
     end
