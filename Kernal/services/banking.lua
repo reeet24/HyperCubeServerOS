@@ -235,6 +235,63 @@ local function add_to_account_index(database, owner, account_name, account_owner
     database:set(account_index_key(owner), index)
 end
 
+local function upsert_minecraft_link(database, minecraft_lookup, owner, username, minecraft_name)
+    local key = minecraft_key(minecraft_lookup)
+    local link = database:get(key) or {
+        minecraft_name = minecraft_name,
+        owners = {},
+    }
+    link.minecraft_name = link.minecraft_name or minecraft_name
+    link.owners = link.owners or {}
+    if link.owner and not link.owners[link.owner] then
+        link.owners[link.owner] = {
+            owner = link.owner,
+            username = link.username,
+            minecraft_name = link.minecraft_name or minecraft_name,
+        }
+    end
+    link.owners[owner] = {
+        owner = owner,
+        username = username,
+        minecraft_name = minecraft_name,
+    }
+    link.owner = link.owner or owner
+    link.username = link.username or username
+    database:set(key, link)
+end
+
+local function remove_minecraft_owner(database, minecraft_lookup, owner)
+    local key = minecraft_key(minecraft_lookup)
+    local link = database:get(key)
+    if not link then
+        return
+    end
+    link.owners = link.owners or {}
+    if link.owner and not link.owners[link.owner] then
+        link.owners[link.owner] = {
+            owner = link.owner,
+            username = link.username,
+            minecraft_name = link.minecraft_name,
+        }
+    end
+    link.owners[owner] = nil
+
+    local next_owner, next_entry
+    for candidate_owner, entry in pairs(link.owners) do
+        next_owner = candidate_owner
+        next_entry = entry
+        break
+    end
+
+    if next_owner then
+        link.owner = next_owner
+        link.username = next_entry and next_entry.username or nil
+        database:set(key, link)
+    else
+        database:delete(key)
+    end
+end
+
 local function append_history(database, owner, entry)
     local record = database:get(history_key(owner)) or {
         owner = owner,
@@ -308,10 +365,6 @@ function BankService:open(owner, username, minecraft_name, account_name)
         return false, minecraft_err == "InvalidMinecraftName" and "MinecraftNameRequired" or minecraft_err
     end
     local minecraft_lookup = minecraft_lookup_key(minecraft_name)
-    local minecraft_link = self.database:get(minecraft_key(minecraft_lookup))
-    if minecraft_link and minecraft_link.owner and minecraft_link.owner ~= owner then
-        return false, "MinecraftNameInUse"
-    end
 
     local existing_owner, existing = resolve_account(self.database, owner, username, account_name)
     if existing then
@@ -325,11 +378,7 @@ function BankService:open(owner, username, minecraft_name, account_name)
             self.database:set(account_key(existing_owner), existing)
         end
         if account_name == "main" then
-            self.database:set(minecraft_key(minecraft_lookup), {
-                owner = existing_owner,
-                username = existing.username or username,
-                minecraft_name = existing.minecraft_name or minecraft_name,
-            })
+            upsert_minecraft_link(self.database, minecraft_lookup, owner, existing.username or username, existing.minecraft_name or minecraft_name)
         end
         if existing_owner ~= account_owner then
             self.database:set(account_key(account_owner), existing)
@@ -368,11 +417,7 @@ function BankService:open(owner, username, minecraft_name, account_name)
         })
     end
     if account_name == "main" then
-        self.database:set(minecraft_key(minecraft_lookup), {
-            owner = owner,
-            username = username,
-            minecraft_name = minecraft_name,
-        })
+        upsert_minecraft_link(self.database, minecraft_lookup, owner, username, minecraft_name)
     end
     add_to_account_index(self.database, owner, account_name, account_owner)
     append_history(self.database, account_owner, {
@@ -398,14 +443,48 @@ function BankService:lookup_by_minecraft(minecraft_name)
         return false, "InvalidMinecraftName"
     end
     local link = self.database:get(minecraft_key(lookup))
-    if not link or not link.owner then
+    if not link or (not link.owner and not link.owners) then
         return false, "AccountNotFound"
     end
-    local account = self.database:get(account_key(link.owner))
+    local account = link.owner and self.database:get(account_key(link.owner)) or nil
+    local matches = {}
+    if link.owners then
+        for owner, entry in pairs(link.owners) do
+            local candidate = self.database:get(account_key(owner))
+            if candidate then
+                matches[#matches + 1] = {
+                    owner = owner,
+                    username = entry and entry.username or candidate.username,
+                    account_name = candidate.account_name or "main",
+                }
+            end
+            if not account and candidate then
+                account = candidate
+            end
+        end
+    end
+    if account and #matches == 0 then
+        matches[#matches + 1] = {
+            owner = account.owner,
+            username = account.username,
+            account_name = account.account_name or "main",
+        }
+    end
+    if account and link.owner and not self.database:get(account_key(link.owner)) then
+        for _, match in ipairs(matches) do
+            account = self.database:get(account_key(match.owner))
+            if account then
+                break
+            end
+        end
+    end
     if not account then
         return false, "AccountNotFound"
     end
-    return true, public_account(account)
+    local result = public_account(account)
+    result.minecraft_matches = matches
+    result.minecraft_match_count = #matches
+    return true, result
 end
 
 function BankService:close(owner, reason, closed_by)
@@ -432,7 +511,7 @@ function BankService:close(owner, reason, closed_by)
     end
     local lookup = minecraft_lookup_key(account.minecraft_name)
     if lookup then
-        self.database:delete(minecraft_key(lookup))
+        remove_minecraft_owner(self.database, lookup, owner)
     end
     append_history(self.database, owner, {
         id = tostring(account.account_id or owner) .. ":closed:" .. tostring(now()),

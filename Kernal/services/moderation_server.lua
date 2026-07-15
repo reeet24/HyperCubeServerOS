@@ -412,6 +412,9 @@ local function account_lookup_page(hypercube, viewer, query, notice)
     if bank and bank.open then
         lines[#lines + 1] = "<item>Bank: open, balance " .. escape(bank.balance or 0) .. " " .. escape(bank.currency or "TC") .. "</item>"
         lines[#lines + 1] = "<item>Minecraft: " .. escape(bank.minecraft_name or "missing") .. "</item>"
+        if bank.minecraft_match_count and bank.minecraft_match_count > 1 then
+            lines[#lines + 1] = "<item>Minecraft matches: " .. escape(bank.minecraft_match_count) .. " accounts use this name</item>"
+        end
     else
         lines[#lines + 1] = "<item>Bank: none</item>"
     end
