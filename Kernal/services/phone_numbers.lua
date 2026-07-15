@@ -1,4 +1,5 @@
 local phone_numbers = {}
+local tesseracid = require("Kernal.services.tesseracid")
 
 local WEEK_MS = 7 * 24 * 60 * 60 * 1000
 local DEFAULT_BILL = 25
@@ -53,6 +54,14 @@ local function require_owner(owner)
         return nil, "AuthRequired"
     end
     return tostring(owner)
+end
+
+local function account_username(database, owner)
+    if not database or not owner or owner == "" then
+        return nil
+    end
+    local account = tesseracid.find_account_by_tid(database, owner)
+    return account and account.username or nil
 end
 
 local function append_chat_message(chats, number, message)
@@ -111,31 +120,58 @@ function PhoneService:set_bank(bank)
 end
 
 function PhoneService:require_bank_account(owner, username)
-    if not self.bank or not self.bank.status then
+    if not self.bank or (not self.bank.status and not self.bank.linked_account) then
         return false, "BankAccountRequired"
     end
-    local ok, account = self.bank:status(owner, username)
+    local ok, account
+    if self.bank.linked_account then
+        ok, account = self.bank:linked_account(owner, username)
+    else
+        ok, account = self.bank:status(owner, username)
+    end
     if not ok then
+        local fallback_username = account_username(self.database, owner)
+        if fallback_username and fallback_username ~= username then
+            if self.bank.linked_account then
+                ok, account = self.bank:linked_account(owner, fallback_username)
+            else
+                ok, account = self.bank:status(owner, fallback_username)
+            end
+            if ok and account and account.open == true then
+                return true, account, fallback_username, account.account_name
+            end
+        end
         if account == "AccountRequired" or account == "AuthRequired" then
             return false, "BankAccountRequired"
         end
         return false, account
     end
     if not account or account.open ~= true then
+        local fallback_username = account_username(self.database, owner)
+        if fallback_username and fallback_username ~= username then
+            if self.bank.linked_account then
+                ok, account = self.bank:linked_account(owner, fallback_username)
+            else
+                ok, account = self.bank:status(owner, fallback_username)
+            end
+            if ok and account and account.open == true then
+                return true, account, fallback_username, account.account_name
+            end
+        end
         return false, "BankAccountRequired"
     end
-    return true, account
+    return true, account, username, account.account_name
 end
 
 function PhoneService:charge_renewal(owner, username)
-    local ok, account = self:require_bank_account(owner, username)
+    local ok, account, bank_username, account_name = self:require_bank_account(owner, username)
     if not ok then
         return false, account
     end
     if not self.bank.debit then
         return false, "BankAccountRequired"
     end
-    local charged, result = self.bank:debit(owner, self.weekly_bill, "Tesserac Phone weekly service", "phone", username)
+    local charged, result = self.bank:debit(owner, self.weekly_bill, "Tesserac Phone weekly service", "phone", bank_username or username, account_name)
     if not charged then
         if result == "AccountRequired" then
             return false, "BankAccountRequired"

@@ -533,6 +533,33 @@ function BankService:status(owner, username, account_name)
     return true, public_account(record)
 end
 
+function BankService:linked_account(owner, username)
+    local ok, err = self:require_database()
+    if not ok then
+        return false, err
+    end
+    owner, err = require_owner(owner)
+    if not owner then
+        return false, err
+    end
+
+    local _, account = resolve_account(self.database, owner, username, "main")
+    if account then
+        return true, public_account(account)
+    end
+
+    local index = self.database:get(account_index_key(owner))
+    for _, entry in ipairs((index and index.accounts) or {}) do
+        local account_owner = entry.account_owner or account_owner_key(owner, entry.account_name)
+        account = self.database:get(account_key(account_owner))
+        if account then
+            return true, public_account(account)
+        end
+    end
+
+    return false, "AccountRequired"
+end
+
 function BankService:history(owner, username, account_name)
     local ok, err = self:require_database()
     if not ok then
