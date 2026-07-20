@@ -246,8 +246,14 @@ local function request_id(sender)
 end
 
 local function phone_rom_integrity(self, message)
-    local device = tostring(message.device or "TPhone")
-    if tostring(message.role or "") ~= "phone" and device ~= "TPhone" and device ~= "TBusinessPhone" then
+    local role = tostring(message.role or "")
+    local device = tostring(message.device or "")
+    if device == "" and role == "phone" then
+        device = "TPhone"
+    elseif device == "" and role == "business_phone" then
+        device = "TBusinessPhone"
+    end
+    if role ~= "phone" and role ~= "business_phone" and device ~= "TPhone" and device ~= "TBusinessPhone" then
         return true
     end
 
@@ -717,9 +723,16 @@ function RednetDriver:poll(timeout)
         elseif type(message) == "table" and message.type == "hello" then
             log_event(self, "info", "client hello sender=" .. tostring(sender) .. " os=" .. tostring(message.os) .. " role=" .. tostring(message.role))
             local integrity_ok, integrity_err = phone_rom_integrity(self, message)
-            local expected_rom_checksum = self.expected_rom_checksums
-                and self.expected_rom_checksums[tostring(message.device or "TPhone")]
-                or self.expected_phone_rom_checksum
+            local role = tostring(message.role or "")
+            local device_name = tostring(message.device or "")
+            if device_name == "" and role == "phone" then
+                device_name = "TPhone"
+            elseif device_name == "" and role == "business_phone" then
+                device_name = "TBusinessPhone"
+            end
+            local expected_rom_checksum = device_name ~= ""
+                and ((self.expected_rom_checksums and self.expected_rom_checksums[device_name]) or self.expected_phone_rom_checksum)
+                or nil
             self.clients[sender] = {
                 id = sender,
                 os = message.os,
