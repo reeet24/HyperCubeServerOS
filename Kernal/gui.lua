@@ -307,6 +307,107 @@ local function draw_installer(screen, hypercube, state, width, y, height)
     return row_buttons
 end
 
+local function serialize_preview(value, width)
+    local text
+    if textutils and textutils.serialize then
+        local ok, serialized = pcall(textutils.serialize, value)
+        text = ok and serialized or tostring(value)
+    else
+        text = tostring(value)
+    end
+    text = tostring(text or ""):gsub("\n", " ")
+    return truncate(text, width)
+end
+
+local function db_state(state)
+    state.db = state.db or {
+        selected = nil,
+        confirm_delete = nil,
+        message = nil,
+        entries = {},
+    }
+    return state.db
+end
+
+local function draw_db_explorer(screen, hypercube, state, width, y, height)
+    screen:border(2, y, width - 2, height, C.lightGray, C.black)
+    screen:write(4, y, " DB Explorer ", C.yellow, C.black)
+
+    local buttons = {}
+    local db = db_state(state)
+    if not hypercube.database then
+        screen:write(4, y + 1, "Database unavailable.", C.red, C.black)
+        state.max_scroll.db = 0
+        return buttons
+    end
+
+    local entries = hypercube.database.list and hypercube.database:list("", 500) or {}
+    db.entries = entries
+
+    local detail_height = math.min(5, math.max(3, math.floor(height / 3)))
+    local list_height = math.max(1, height - detail_height - 2)
+    local visible = math.max(1, list_height)
+    local max_scroll = math.max(0, #entries - visible)
+    local scroll = clamp(get_scroll(state, "db"), 0, max_scroll)
+    set_scroll(state, "db", scroll, max_scroll)
+    state.max_scroll.db = max_scroll
+
+    local selected_key = db.selected
+    local row = y + 1
+    for i = scroll + 1, math.min(#entries, scroll + visible) do
+        local entry = entries[i]
+        local selected = entry.key == selected_key
+        local label = truncate(tostring(entry.key), math.max(8, width - 25))
+        screen:write(4, row, selected and ">" or " ", selected and C.yellow or C.lightGray, C.black)
+        buttons["db_select_" .. tostring(i)] = screen:button("db_select_" .. tostring(i), 5, row, math.max(8, width - 26), label, {
+            fg = selected and C.black or C.white,
+            bg = selected and C.yellow or C.gray,
+        })
+        screen:write(math.max(6, width - 19), row, truncate(tostring(entry.value_type), 8), C.lightGray, C.black)
+        screen:write(math.max(6, width - 10), row, "v" .. tostring(entry.version or 0), C.lightGray, C.black)
+        row = row + 1
+    end
+
+    if #entries == 0 then
+        screen:write(4, y + 1, "No records found.", C.lightGray, C.black)
+    end
+    draw_scroll_hint(screen, width, y, list_height + 2, scroll, max_scroll)
+
+    local detail_y = y + height - detail_height
+    screen:border(3, detail_y, math.max(1, width - 4), detail_height, C.gray, C.black)
+    local selected_value = nil
+    if selected_key then
+        selected_value = hypercube.database:get(selected_key)
+    end
+    if selected_key and selected_value ~= nil then
+        screen:write(5, detail_y, " " .. truncate(selected_key, math.max(1, width - 22)) .. " ", C.yellow, C.black)
+        screen:write(5, detail_y + 1, serialize_preview(selected_value, math.max(1, width - 10)), C.white, C.black)
+        if db.confirm_delete == selected_key then
+            buttons.db_delete_confirm = screen:button("db_delete_confirm", 5, detail_y + detail_height - 1, 12, "Confirm", {
+                fg = C.white,
+                bg = C.red,
+            })
+            buttons.db_delete_cancel = screen:button("db_delete_cancel", 19, detail_y + detail_height - 1, 10, "Cancel", {
+                fg = C.white,
+                bg = C.gray,
+            })
+        else
+            buttons.db_delete = screen:button("db_delete", 5, detail_y + detail_height - 1, 10, "Delete", {
+                fg = C.white,
+                bg = C.red,
+            })
+        end
+    else
+        screen:write(5, detail_y + 1, db.message or "Select a record to preview or delete.", C.lightGray, C.black)
+    end
+
+    if db.message and selected_key then
+        screen:write(31, detail_y + detail_height - 1, truncate(db.message, math.max(1, width - 34)), C.orange, C.black)
+    end
+
+    return buttons
+end
+
 local function create_screen_manager(default_screen)
     local manager = {
         active = default_screen,
@@ -410,6 +511,44 @@ local function ensure_screen_manager(state, hypercube)
             return false
         end,
     })
+    screens:define("db", {
+        render = function(ctx)
+            ctx.state.panel_buttons = draw_db_explorer(ctx.screen, hypercube, ctx.state, ctx.width, ctx.y, ctx.height)
+        end,
+        on_touch = function(ctx)
+            local id = tostring(ctx.button_id or "")
+            local db = db_state(ctx.state)
+            local row = tonumber(id:match("^db_select_(%d+)$"))
+            if row and db.entries and db.entries[row] then
+                db.selected = db.entries[row].key
+                db.confirm_delete = nil
+                db.message = nil
+                return true
+            elseif id == "db_delete" and db.selected then
+                db.confirm_delete = db.selected
+                db.message = "Press Confirm to delete."
+                return true
+            elseif id == "db_delete_cancel" then
+                db.confirm_delete = nil
+                db.message = nil
+                return true
+            elseif id == "db_delete_confirm" and db.selected and db.confirm_delete == db.selected and hypercube.database then
+                local key = db.selected
+                local ok, result = hypercube.database:delete(key)
+                db.confirm_delete = nil
+                if ok then
+                    db.message = "Deleted " .. tostring(key)
+                    db.selected = nil
+                    hypercube.logger.warn("db explorer deleted record " .. tostring(key), hypercube.root_context)
+                else
+                    db.message = "Delete failed: " .. tostring(result)
+                    hypercube.logger.warn("db explorer delete failed " .. tostring(key) .. ": " .. tostring(result), hypercube.root_context)
+                end
+                return true
+            end
+            return false
+        end,
+    })
     state.screens = screens
     return screens
 end
@@ -419,7 +558,7 @@ local function draw_footer(screen, width, height, active_view)
     local y = height
     screen:rect(1, y, width, 1, C.gray)
 
-    if width < 46 then
+    if width < 58 then
         buttons.refresh = screen:button("refresh", 1, y, 3, "R", {
             fg = C.white,
             bg = C.blue,
@@ -435,6 +574,10 @@ local function draw_footer(screen, width, height, active_view)
         buttons.installer = screen:button("installer", 13, y, 3, "I", {
             fg = active_view == "installer" and C.black or C.white,
             bg = active_view == "installer" and C.yellow or C.gray,
+        })
+        buttons.db = screen:button("db", 17, y, 3, "D", {
+            fg = active_view == "db" and C.black or C.white,
+            bg = active_view == "db" and C.yellow or C.gray,
         })
         buttons.shutdown = screen:button("shutdown", math.max(1, width - 2), y, 3, "X", {
             fg = C.white,
@@ -459,7 +602,11 @@ local function draw_footer(screen, width, height, active_view)
         fg = active_view == "installer" and C.black or C.white,
         bg = active_view == "installer" and C.yellow or C.gray,
     })
-    buttons.shutdown = screen:button("shutdown", math.max(47, width - 11), y, 10, "Shutdown", {
+    buttons.db = screen:button("db", 47, y, 3, "DB", {
+        fg = active_view == "db" and C.black or C.white,
+        bg = active_view == "db" and C.yellow or C.gray,
+    })
+    buttons.shutdown = screen:button("shutdown", width - 7, y, 8, "Shutdown", {
         fg = C.white,
         bg = C.red,
     })
@@ -566,6 +713,9 @@ function gui.run(hypercube)
             elseif id == "installer" then
                 screens:set("installer")
                 state.view = "installer"
+            elseif id == "db" then
+                screens:set("db")
+                state.view = "db"
             elseif id and screens:touch({
                 button_id = id,
                 state = state,
@@ -596,6 +746,10 @@ function gui.run(hypercube)
             elseif key == keys.i then
                 screens:set("installer")
                 state.view = "installer"
+                gui.render(hypercube, state)
+            elseif key == keys.d then
+                screens:set("db")
+                state.view = "db"
                 gui.render(hypercube, state)
             elseif key == keys.up then
                 scroll_state(state, state.view or "logs", -1, state.max_scroll[state.view or "logs"] or 0)

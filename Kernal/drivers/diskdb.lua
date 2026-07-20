@@ -484,6 +484,62 @@ function DiskDB:delete(key)
     }
 end
 
+function DiskDB:list(prefix, limit)
+    self:refresh()
+    prefix = tostring(prefix or "")
+    limit = tonumber(limit) or 200
+
+    local safe_keys = {}
+    local seen = {}
+    for _, root in ipairs(self.roots or {}) do
+        local records_dir = paths_for(root, "_init").records
+        if fs and fs.exists and fs.list and fs.exists(records_dir) then
+            for _, file in ipairs(fs.list(records_dir)) do
+                local safe = tostring(file):match("^(.*)%.db$")
+                if safe and not seen[safe] then
+                    seen[safe] = true
+                    safe_keys[#safe_keys + 1] = safe
+                end
+            end
+        end
+    end
+    table.sort(safe_keys)
+
+    local entries = {}
+    for _, safe in ipairs(safe_keys) do
+        local record = self:best_record(safe)
+        if record and not record.deleted then
+            local key = tostring(record.key or safe)
+            if prefix == "" or key:sub(1, #prefix) == prefix then
+                local value_type = type(record.value)
+                local preview
+                if value_type == "table" then
+                    local count = 0
+                    for _ in pairs(record.value) do
+                        count = count + 1
+                    end
+                    preview = "table[" .. tostring(count) .. "]"
+                else
+                    preview = tostring(record.value)
+                end
+                entries[#entries + 1] = {
+                    key = key,
+                    safe_key = safe,
+                    version = record.version or 0,
+                    value_type = value_type,
+                    preview = preview,
+                    updated_at = record.updated_at,
+                }
+                if #entries >= limit then
+                    break
+                end
+            end
+        end
+    end
+
+    return entries
+end
+
 function DiskDB:summary()
     return {
         status = self.status,
