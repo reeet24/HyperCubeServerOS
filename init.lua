@@ -14,6 +14,7 @@ local diskdb_driver = require("Kernal.drivers.diskdb")
 local tesseracid = require("Kernal.services.tesseracid")
 local web_service = require("Kernal.services.web")
 local installer_service = require("Kernal.services.installer")
+local server_config = require("Kernal.services.server_config")
 local phone_service = require("Kernal.services.phone_numbers")
 local banking_server = require("Kernal.services.banking_server")
 local atm_monitor = require("Kernal.services.atm_monitor")
@@ -44,6 +45,7 @@ local HyperCube = {
     tesseracid = tesseracid,
     web_service = web_service,
     installer_service = installer_service,
+    server_config = server_config,
     phone_service = phone_service,
     banking_server = banking_server,
     atm_monitor = atm_monitor,
@@ -88,6 +90,7 @@ HyperCube.root_context.next_fd = 3
 function HyperCube.boot()
     logger.start_file("logs/kernel.log")
     logger.info("HyperCubeServer boot", HyperCube.root_context)
+    HyperCube.config = server_config.load()
     HyperCube.identity = tesseracid.load_local()
 
     local ok, screen_or_err, screen_err = pcall(screen_driver.init, {
@@ -105,10 +108,11 @@ function HyperCube.boot()
     local net_ok, network_or_err = pcall(rednet_driver.init, {
         rednet = {
             mode = HyperCube.network_mode,
-            protocol = "tesserac",
-            hostname = HyperCube.name,
+            protocol = (HyperCube.config.network and HyperCube.config.network.protocol) or "tesserac",
+            hostname = (HyperCube.config.network and HyperCube.config.network.hostname) or HyperCube.name,
             os = HyperCube.name,
             role = HyperCube.network_mode == "server" and "server" or "phone",
+            side = HyperCube.config.network and HyperCube.config.network.modem,
             identity = HyperCube.identity,
             logger = logger,
             verbose = false,
@@ -130,8 +134,9 @@ function HyperCube.boot()
     if HyperCube.network_mode == "server" then
         local db_ok, database_or_err = pcall(diskdb_driver.init, {
             diskdb = {
-                root = "hypercube_db",
-                min_replicas = 2,
+                root = (HyperCube.config.db and HyperCube.config.db.root) or "hypercube_db",
+                min_replicas = (HyperCube.config.db and HyperCube.config.db.min_replicas) or 2,
+                drives = HyperCube.config.db and HyperCube.config.db.drives,
             },
         })
         if db_ok and database_or_err then
@@ -160,7 +165,8 @@ function HyperCube.boot()
         end
 
         HyperCube.installer = installer_service.new({
-            source = "installer/hypercube_phone",
+            source = server_config.installer_source(HyperCube.config, "hypercube_phone"),
+            source_root = HyperCube.config.installer and HyperCube.config.installer.root,
         })
         if HyperCube.network and HyperCube.installer.update_metadata_for_device then
             HyperCube.network.expected_rom_checksums = {}

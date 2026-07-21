@@ -58,6 +58,16 @@ local function combine(a, b)
     return a .. "/" .. b
 end
 
+local function source_under_root(root, source)
+    root = tostring(root or ""):gsub("\\", "/"):gsub("/+$", "")
+    source = tostring(source or DEFAULT_SOURCE):gsub("\\", "/")
+    local suffix = source:match("^installer/(.+)$")
+    if root == "" or root == "installer" or not suffix then
+        return source
+    end
+    return combine(root, suffix)
+end
+
 local function find_drive_mounts()
     local mounts = {}
     if peripheral and peripheral.getNames and peripheral.getType and peripheral.wrap then
@@ -566,6 +576,7 @@ end
 function installer.new(options)
     local self = {
         source = options and options.source or DEFAULT_SOURCE,
+        source_root = options and options.source_root or nil,
         profile_key = options and options.profile or nil,
         selected_index = 1,
         last_result = nil,
@@ -597,6 +608,11 @@ function installer.new(options)
             return SOURCE_PROFILES[self.profile_key]
         end
         return profile_for_source(self.source)
+    end
+
+    function self:profile_source(profile)
+        profile = profile or self:source_profile()
+        return source_under_root(self.source_root, profile.source or self.source)
     end
 
     function self:drives()
@@ -666,7 +682,7 @@ function installer.new(options)
 
     function self:build_update_package_for_device(device)
         local profile = profile_for_device(device) or SOURCE_PROFILES.phone
-        local blob, file_count_or_err = build_rom_blob(profile.source or self.source, profile)
+        local blob, file_count_or_err = build_rom_blob(self:profile_source(profile), profile)
         if not blob then
             return false, file_count_or_err
         end
@@ -701,7 +717,7 @@ function installer.new(options)
 
     function self:update_metadata_for_device(device)
         local profile = profile_for_device(device) or SOURCE_PROFILES.phone
-        local blob, file_count_or_err = build_rom_blob(profile.source or self.source, profile)
+        local blob, file_count_or_err = build_rom_blob(self:profile_source(profile), profile)
         if not blob then
             return false, file_count_or_err
         end

@@ -174,6 +174,35 @@ local function find_drive_mounts()
     return mounts
 end
 
+local function make_drive_filter(drives)
+    if type(drives) ~= "table" or #drives == 0 then
+        return nil
+    end
+    local allowed = {}
+    for _, drive in ipairs(drives) do
+        if type(drive) == "table" then
+            if drive.name then
+                allowed["name:" .. tostring(drive.name)] = true
+            end
+            if drive.mount then
+                allowed["mount:" .. tostring(drive.mount)] = true
+            end
+            if drive.id then
+                allowed["id:" .. tostring(drive.id)] = true
+            end
+        else
+            allowed["name:" .. tostring(drive)] = true
+            allowed["mount:" .. tostring(drive)] = true
+            allowed["id:" .. tostring(drive)] = true
+        end
+    end
+    return function(root)
+        return allowed["name:" .. tostring(root.name)]
+            or allowed["mount:" .. tostring(root.mount)]
+            or allowed["id:" .. tostring(root.id)]
+    end
+end
+
 local function paths_for(root, key)
     local base = combine(root.mount, root.db_root)
     return {
@@ -204,6 +233,7 @@ function DiskDB.new(options)
     local self = setmetatable({}, DiskDB)
     self.db_root = options.root or DEFAULT_ROOT
     self.min_replicas = options.min_replicas or 2
+    self.drive_filter = make_drive_filter(options.drives)
     self.roots = {}
     self.status = "offline"
     self.last_error = nil
@@ -214,6 +244,15 @@ end
 
 function DiskDB:refresh()
     self.roots = find_drive_mounts()
+    if self.drive_filter then
+        local filtered = {}
+        for _, root in ipairs(self.roots) do
+            if self.drive_filter(root) then
+                filtered[#filtered + 1] = root
+            end
+        end
+        self.roots = filtered
+    end
     table.sort(self.roots, function(a, b)
         return root_sort_key(a) < root_sort_key(b)
     end)

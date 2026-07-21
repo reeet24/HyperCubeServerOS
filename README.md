@@ -48,7 +48,22 @@ Useful options:
 - `update_server.lua --root computer/0`: Force the server source root if auto-detection fails.
 - `update_server.lua --token <token>`: Use a GitHub token to avoid API rate limits. You can also store the token in a local `github_token` file.
 
-The updater replaces server source paths such as `Kernal`, `appstore`, `installer`, `docs`, `init.lua`, and `startup.lua`, while preserving local `logs`, `user`, `hypercube_db`, disk records, and admin tokens. Restart the server after updating.
+The updater replaces server source paths such as `Kernal`, `appstore`, `installer`, `docs`, `init.lua`, and `startup.lua`, while preserving local `logs`, `user`, `hypercube_db`, disk records, `server_config`, and admin tokens. If `server_config` moves the installer source onto another disk, update diffs still show repo paths under `installer/...` but writes are applied to the configured installer disk path. Restart the server after updating.
+
+## First-Time Setup
+
+Run `first_time_setup.lua` on a new server before production boot. It is safe to upload this file to Pastebin and run it from a fresh ComputerCraft computer as an all-in-one bootstrap installer, as long as the ComputerCraft HTTP API is enabled.
+
+The setup script:
+
+- Server modem side/name.
+- DB disk drives that DiskDB should use.
+- DiskDB replica group count.
+- External installer disk where downloaded `installer/` files are stored.
+- GitHub branch to install from, defaulting to `main`.
+- Server source download/install from `reeet24/HyperCubeServerOS`.
+
+The setup script writes `server_config` and `hypercube_server_install`. On boot, `init.lua` uses that config for rednet, DiskDB, and phone installer metadata. DiskDB only uses the configured DB drives, so the installer disk is not accidentally added to the replicated database. Later updates use the saved install record for patch checks and use `server_config` when applying `installer/...` changes.
 
 ## Kernel Pieces
 
@@ -316,8 +331,10 @@ Bank branch and ATM device roles are intentionally narrow and include:
 
 ## Production Checklist
 
-- Attach and open a wireless modem on the server.
-- Attach at least two disk drives containing the replicated `hypercube_db`.
+- Run `first_time_setup.lua` and confirm it writes `server_config`.
+- Attach the configured server modem.
+- Attach the configured DB disk drives containing the replicated `hypercube_db`.
+- Attach the configured installer disk if installer source was moved off the main drive.
 - Boot `computer/0/startup.lua`.
 - Confirm `logs/kernel.log` includes `rednet hosting`, `diskdb`, and `phone ROM checksum`.
 - Reinstall or update phones after ROM integrity changes so they send `rom_checksum`.

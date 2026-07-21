@@ -8,6 +8,7 @@ local REPO_NAME = "HyperCubeServerOS"
 local DEFAULT_BRANCH = "main"
 
 local ARGS = { ... }
+local config_ok, server_config = pcall(require, "Kernal.services.server_config")
 
 local INCLUDE_ROOTS = {
     "Kernal",
@@ -21,6 +22,7 @@ local INCLUDE_ROOTS = {
     "package_server.lua",
     "package_server.py",
     "update_server.lua",
+    "first_time_setup.lua",
 }
 
 local CLEAN_PATHS = {
@@ -35,6 +37,7 @@ local CLEAN_PATHS = {
     "package_server.lua",
     "package_server.py",
     "update_server.lua",
+    "first_time_setup.lua",
 }
 
 local EXCLUDE = {
@@ -132,6 +135,29 @@ local function normalize(path)
     path = path:gsub("//+", "/")
     if path == "." then
         path = ""
+    end
+    return path
+end
+
+local function load_server_config()
+    if config_ok and server_config and server_config.load then
+        local ok, config = pcall(server_config.load)
+        if ok and type(config) == "table" then
+            return config
+        end
+    end
+    return {
+        installer = {
+            root = "installer",
+        },
+    }
+end
+
+local function local_path(path, config)
+    path = normalize(path)
+    config = config or load_server_config()
+    if config_ok and server_config and server_config.local_path then
+        return server_config.local_path(config, path)
     end
     return path
 end
@@ -599,6 +625,7 @@ local function collect_package(remote_root, branch, root_entries)
 end
 
 local function ensure_parent(path)
+    path = local_path(path)
     local dir = tostring(path):match("^(.*)/[^/]+$")
     if dir and dir ~= "" and not fs.exists(dir) then
         fs.makeDir(dir)
@@ -606,6 +633,7 @@ local function ensure_parent(path)
 end
 
 local function write_file(path, data)
+    path = local_path(path)
     ensure_parent(path)
     local handle = fs.open(path, "wb")
     if not handle then
@@ -617,6 +645,7 @@ local function write_file(path, data)
 end
 
 local function read_file(path)
+    path = local_path(path)
     if not fs.exists(path) or not fs.open then
         return nil
     end
@@ -775,16 +804,19 @@ end
 local function apply_patch_changes(changes)
     for index, change in ipairs(changes or {}) do
         if change.status == "removed" then
-            if fs.exists(change.path) then
-                fs.delete(change.path)
+            local path = local_path(change.path)
+            if fs.exists(path) then
+                fs.delete(path)
             end
         elseif change.status == "renamed" then
-            if fs.exists(change.from) then
+            local from_path = local_path(change.from)
+            local to_path = local_path(change.path)
+            if fs.exists(from_path) then
                 ensure_parent(change.path)
-                if fs.exists(change.path) then
-                    fs.delete(change.path)
+                if fs.exists(to_path) then
+                    fs.delete(to_path)
                 end
-                fs.move(change.from, change.path)
+                fs.move(from_path, to_path)
             end
         else
             local ok, err = apply_unified_patch(change.path, change.patch)
@@ -933,7 +965,7 @@ local function prepare_status(options)
     local pseudo = {}
     for _, file in ipairs(files) do
         pseudo[#pseudo + 1] = {
-            status = fs.exists(file.path) and "modified" or "added",
+            status = fs.exists(local_path(file.path)) and "modified" or "added",
             path = file.path,
         }
     end
@@ -988,8 +1020,9 @@ function github_updater.install(status, options)
         end
     end
     for _, path in ipairs(CLEAN_PATHS) do
-        if fs.exists(path) then
-            fs.delete(path)
+        local target = local_path(path)
+        if fs.exists(target) then
+            fs.delete(target)
         end
     end
     for _, file in ipairs(files) do
@@ -1190,8 +1223,9 @@ end
 
 print("Cleaning source paths...")
 for _, path in ipairs(CLEAN_PATHS) do
-    if fs.exists(path) then
-        fs.delete(path)
+    local target = local_path(path)
+    if fs.exists(target) then
+        fs.delete(target)
     end
 end
 
