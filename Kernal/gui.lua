@@ -1,4 +1,5 @@
 local gui = {}
+local DEFAULT_REFRESH_RATE = 4
 
 local C = {
     black = colors and colors.black or 32768,
@@ -684,21 +685,25 @@ function gui.run(hypercube)
 
     hypercube.logger.info("gui started", hypercube.root_context)
     gui.render(hypercube, state)
+    local frame_interval = 1 / DEFAULT_REFRESH_RATE
+    local next_frame = os.clock() + frame_interval
 
     while state.running do
+        local now = os.clock()
         local screens = ensure_screen_manager(state, hypercube)
         if hypercube.network and hypercube.network.mode == "server" then
             hypercube.network:poll(0.05)
-            if hypercube.network.announce and os.clock() - state.last_announce >= 5 then
+            if hypercube.network.announce and now - state.last_announce >= 5 then
                 hypercube.network:announce()
-                state.last_announce = os.clock()
+                state.last_announce = now
             end
         end
         if hypercube.database then
             hypercube.database:refresh()
         end
 
-        local event = screen:pull_event(1)
+        local timeout = math.max(0, next_frame - os.clock())
+        local event = screen:pull_event(timeout)
         if event and event.type == "touch" then
             local id = hit_button(state.buttons, event.x, event.y)
             if id == "shutdown" then
@@ -726,11 +731,11 @@ function gui.run(hypercube)
             elseif id == "refresh" then
                 hypercube.logger.info("gui refreshed", hypercube.root_context)
             end
-            gui.render(hypercube, state)
+            state.needs_render = true
         elseif event and event.type == "scroll" then
             local direction = event.direction or 0
             scroll_state(state, state.view or "logs", direction, state.max_scroll[state.view or "logs"] or 0)
-            gui.render(hypercube, state)
+            state.needs_render = true
         elseif event and event.type == "key" and keys then
             local key = event.raw and event.raw[2]
             if key == keys.q then
@@ -738,36 +743,40 @@ function gui.run(hypercube)
             elseif key == keys.l then
                 screens:set("logs")
                 state.view = "logs"
-                gui.render(hypercube, state)
+                state.needs_render = true
             elseif key == keys.p then
                 screens:set("processes")
                 state.view = "processes"
-                gui.render(hypercube, state)
+                state.needs_render = true
             elseif key == keys.i then
                 screens:set("installer")
                 state.view = "installer"
-                gui.render(hypercube, state)
+                state.needs_render = true
             elseif key == keys.d then
                 screens:set("db")
                 state.view = "db"
-                gui.render(hypercube, state)
+                state.needs_render = true
             elseif key == keys.up then
                 scroll_state(state, state.view or "logs", -1, state.max_scroll[state.view or "logs"] or 0)
-                gui.render(hypercube, state)
+                state.needs_render = true
             elseif key == keys.down then
                 scroll_state(state, state.view or "logs", 1, state.max_scroll[state.view or "logs"] or 0)
-                gui.render(hypercube, state)
+                state.needs_render = true
             elseif key == keys.pageUp then
                 scroll_state(state, state.view or "logs", -5, state.max_scroll[state.view or "logs"] or 0)
-                gui.render(hypercube, state)
+                state.needs_render = true
             elseif key == keys.pageDown then
                 scroll_state(state, state.view or "logs", 5, state.max_scroll[state.view or "logs"] or 0)
-                gui.render(hypercube, state)
+                state.needs_render = true
             end
-        elseif not event then
+        elseif event and event.type == "resize" then
+            state.needs_render = true
+        end
+
+        if os.clock() >= next_frame then
             gui.render(hypercube, state)
-        elseif event.type == "resize" then
-            gui.render(hypercube, state)
+            next_frame = os.clock() + frame_interval
+            state.needs_render = false
         end
     end
 

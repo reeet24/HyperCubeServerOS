@@ -1,6 +1,9 @@
 local app_manager = require("Kernal.services.app_manager")
 
 local gui = {}
+local DEFAULT_REFRESH_RATE = 10
+local MIN_REFRESH_RATE = 1
+local MAX_REFRESH_RATE = 30
 
 local C = {
     black = colors and colors.black or 32768,
@@ -85,6 +88,8 @@ local function draw_home_indicator(screen, width, height)
     screen:rect(center_x(width, string.rep(" ", w)), height, w, 1, C.lightGray)
 end
 
+local find_app
+
 local function app_render_mode(app)
     local mode = app and app.manifest and app.manifest.render_mode or "window"
     mode = tostring(mode or "window"):lower():gsub("_", "-")
@@ -96,6 +101,66 @@ local function app_render_mode(app)
         return mode
     end
     return "window"
+end
+
+local function clamp_refresh_rate(value)
+    value = tonumber(value) or DEFAULT_REFRESH_RATE
+    if value < MIN_REFRESH_RATE then
+        return MIN_REFRESH_RATE
+    end
+    if value > MAX_REFRESH_RATE then
+        return MAX_REFRESH_RATE
+    end
+    return value
+end
+
+local function app_refresh_rate(app)
+    local manifest = app and app.manifest or {}
+    return clamp_refresh_rate(manifest.refresh_rate or manifest.fps or manifest.frame_rate)
+end
+
+local function current_refresh_rate(state)
+    local app = find_app(state, state.active_app)
+    return app_refresh_rate(app)
+end
+
+local function frame_snapshot(state)
+    state.frame = state.frame or {
+        now = os.clock(),
+        last = os.clock(),
+        dt = 0,
+        count = 0,
+        refresh_rate = DEFAULT_REFRESH_RATE,
+        interval = 1 / DEFAULT_REFRESH_RATE,
+    }
+    return {
+        now = state.frame.now,
+        last = state.frame.last,
+        dt = state.frame.dt,
+        count = state.frame.count,
+        refresh_rate = state.frame.refresh_rate,
+        interval = state.frame.interval,
+    }
+end
+
+local function advance_frame(state)
+    local current = os.clock()
+    state.frame = state.frame or {
+        now = current,
+        last = current,
+        dt = 0,
+        count = 0,
+        refresh_rate = DEFAULT_REFRESH_RATE,
+        interval = 1 / DEFAULT_REFRESH_RATE,
+    }
+    local rate = current_refresh_rate(state)
+    state.frame.last = state.frame.now or current
+    state.frame.now = current
+    state.frame.dt = math.max(0, current - state.frame.last)
+    state.frame.count = (state.frame.count or 0) + 1
+    state.frame.refresh_rate = rate
+    state.frame.interval = 1 / rate
+    return state.frame
 end
 
 local function draw_app_icon(screen, app)
@@ -264,7 +329,7 @@ local function move_home_page(state, delta)
     return set_home_page(state, (state.home_page or 1) + delta)
 end
 
-local function find_app(state, id)
+function find_app(state, id)
     for _, app in ipairs(state.installed_apps or {}) do
         if app.manifest.id == id then
             return app
@@ -384,6 +449,7 @@ local function render_app(tphone, state)
         height = layout.height,
         render_mode = mode,
         active = true,
+        frame = frame_snapshot(state),
         buttons = state.app_buttons,
         state = state.app_state[app.manifest.id] or {},
     }
@@ -501,6 +567,7 @@ local function dispatch_app_touch(tphone, state, button_id, event)
         event = event,
         active = true,
         render_mode = app_render_mode(app),
+        frame = frame_snapshot(state),
         state = state.app_state[app.manifest.id] or {},
     }
     state.app_state[app.manifest.id] = ctx.state
@@ -522,6 +589,7 @@ local function dispatch_app_key(tphone, state, event)
         event = event,
         active = true,
         render_mode = app_render_mode(app),
+        frame = frame_snapshot(state),
         state = state.app_state[app.manifest.id] or {},
     }
     state.app_state[app.manifest.id] = ctx.state
@@ -529,6 +597,29 @@ local function dispatch_app_key(tphone, state, event)
     if not ok then
         if tphone.logger then
             tphone.logger.warn("app key failed " .. tostring(app.manifest.id) .. ": " .. tostring(consumed_or_err), tphone.root_context)
+        end
+        return false
+    end
+    return consumed_or_err == true
+end
+
+local function dispatch_app_tick(tphone, state)
+    local app = find_app(state, state.active_app)
+    if not app or type(app.on_tick) ~= "function" then
+        return false
+    end
+
+    local ctx = {
+        active = true,
+        render_mode = app_render_mode(app),
+        frame = frame_snapshot(state),
+        state = state.app_state[app.manifest.id] or {},
+    }
+    state.app_state[app.manifest.id] = ctx.state
+    local ok, consumed_or_err = pcall(app.on_tick, ctx)
+    if not ok then
+        if tphone.logger then
+            tphone.logger.warn("app tick failed " .. tostring(app.manifest.id) .. ": " .. tostring(consumed_or_err), tphone.root_context)
         end
         return false
     end
@@ -560,77 +651,96 @@ function gui.run(tphone)
     end
 
     tphone.logger.info("tphone gui started", tphone.root_context)
+    advance_frame(state)
     gui.render(tphone, state)
+    local next_frame = os.clock() + (state.frame and state.frame.interval or (1 / DEFAULT_REFRESH_RATE))
 
     while state.running do
         if tphone.apps_dirty then
             state.installed_apps = app_manager.load_all(tphone)
             tphone.apps_dirty = false
+            state.needs_render = true
         end
-        local event = screen:pull_event(1)
+        local timeout = math.max(0, next_frame - os.clock())
+        local event = screen:pull_event(timeout)
         if event and event.type == "touch" then
             local active = find_app(state, state.active_app)
             if active and app_render_mode(active) == "borderless-exclusive" and not state.borderless_chrome_visible and should_reveal_borderless(state, event) then
                 reveal_borderless_chrome(state)
-                gui.render(tphone, state)
+                state.needs_render = true
             else
                 local button_id = hit_button(state.buttons, event.x, event.y)
                 if button_id == "home" then
                     set_active_app(tphone, state, nil)
+                    state.needs_render = true
                 elseif not state.active_app and button_id == "home_prev_page" then
                     move_home_page(state, -1)
+                    state.needs_render = true
                 elseif not state.active_app and button_id == "home_next_page" then
                     move_home_page(state, 1)
+                    state.needs_render = true
                 elseif button_id then
                     if state.active_app then
-                        dispatch_app_touch(tphone, state, button_id, event)
+                        if dispatch_app_touch(tphone, state, button_id, event) then
+                            state.needs_render = true
+                        end
                     else
                         set_active_app(tphone, state, button_id)
+                        state.needs_render = true
                     end
                 elseif state.active_app then
-                    dispatch_app_touch(tphone, state, nil, event)
+                    if dispatch_app_touch(tphone, state, nil, event) then
+                        state.needs_render = true
+                    end
                 else
                     local app_id = hit_app(state.apps, event.x, event.y)
                     if app_id then
                         set_active_app(tphone, state, app_id)
+                        state.needs_render = true
                     end
                 end
-                gui.render(tphone, state)
             end
         elseif event and event.type == "scroll" then
             local active = find_app(state, state.active_app)
             if active and app_render_mode(active) == "borderless-exclusive" and not state.borderless_chrome_visible and should_reveal_borderless(state, event) then
                 reveal_borderless_chrome(state)
-                gui.render(tphone, state)
+                state.needs_render = true
             elseif state.active_app then
-                dispatch_app_touch(tphone, state, nil, event)
-                gui.render(tphone, state)
+                if dispatch_app_touch(tphone, state, nil, event) then
+                    state.needs_render = true
+                end
             else
                 move_home_page(state, tonumber(event.direction or 0) > 0 and 1 or -1)
-                gui.render(tphone, state)
+                state.needs_render = true
             end
         elseif event and (event.type == "key" or event.type == "key_up" or event.type == "char" or event.type == "paste") and keys then
             if state.active_app and dispatch_app_key(tphone, state, event) then
-                gui.render(tphone, state)
+                state.needs_render = true
             else
                 local key = event.raw and event.raw[2]
                 if event.type == "key_up" then
                     -- Apps use key_up for chords; the launcher has no key-up action.
                 elseif key == keys.backspace or key == keys.home then
                     set_active_app(tphone, state, nil)
-                    gui.render(tphone, state)
+                    state.needs_render = true
                 elseif not state.active_app and (key == keys.right or key == keys.down or (keys.pageDown and key == keys.pageDown)) then
                     move_home_page(state, 1)
-                    gui.render(tphone, state)
+                    state.needs_render = true
                 elseif not state.active_app and (key == keys.left or key == keys.up or (keys.pageUp and key == keys.pageUp)) then
                     move_home_page(state, -1)
-                    gui.render(tphone, state)
+                    state.needs_render = true
                 end
             end
-        elseif not event then
+        elseif event and event.type == "resize" then
+            state.needs_render = true
+        end
+
+        if os.clock() >= next_frame then
+            advance_frame(state)
+            dispatch_app_tick(tphone, state)
             gui.render(tphone, state)
-        elseif event.type == "resize" then
-            gui.render(tphone, state)
+            next_frame = os.clock() + (state.frame and state.frame.interval or (1 / DEFAULT_REFRESH_RATE))
+            state.needs_render = false
         end
     end
 

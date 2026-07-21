@@ -9,6 +9,8 @@ local C = api.colors
 
 Apps are Lua modules that return an `app` table. The phone app manager reads `app.manifest` and calls app lifecycle functions such as `render(ctx)`, `on_touch(ctx)`, and `on_key(ctx)` when present.
 
+Rendering is driven by a stable frame loop rather than by input events. Input handlers update app state, and the shell presents the next frame on the configured cadence.
+
 ## App Layout
 
 The app entrypoint is always `app.lua`.
@@ -42,6 +44,7 @@ local app = {
         color = C.cyan,
         dock = true,
         render_mode = "exclusive",
+        refresh_rate = 10,
     },
 }
 ```
@@ -51,6 +54,7 @@ local app = {
 - `color`: App accent color.
 - `dock`: `true` for docked apps.
 - `render_mode`: Use `"exclusive"` for full-screen app rendering.
+- `refresh_rate`: Optional frames per second while the app is active. Defaults to `10`, clamps from `1` to `30`. `fps` and `frame_rate` are accepted aliases.
 
 Manifest files in `appstore/apps/<app_id>/manifest` use `textutils.serialize` table format:
 
@@ -78,8 +82,41 @@ Common fields:
 - `ctx.buttons`: Button hit-test table populated by `api.screen.button`.
 - `ctx.button_id`: Button ID from the most recent touch event, when applicable.
 - `ctx.screen_manager`: Present when using `api.screen.manager`.
+- `ctx.frame`: Frame timing snapshot.
 
 Use `ctx.x` and `ctx.y` for all coordinates so apps render correctly inside the phone shell.
+
+### Frame Timing
+
+`ctx.frame` is available in `render`, `on_touch`, `on_key`, and `on_tick`.
+
+```lua
+ctx.frame.now          -- current os.clock() time
+ctx.frame.last         -- previous frame time
+ctx.frame.dt           -- seconds since previous frame
+ctx.frame.count        -- frame counter
+ctx.frame.refresh_rate -- active FPS
+ctx.frame.interval     -- target seconds per frame
+```
+
+Use `ctx.frame.dt` for movement, timers, and animation:
+
+```lua
+state.x = (state.x or 1) + 10 * ctx.frame.dt
+```
+
+### Lifecycle Hooks
+
+Apps may define:
+
+- `app.render(ctx)`: Draw the current state. Called every scheduled frame.
+- `app.on_tick(ctx)`: Update simulation state once per scheduled frame before `render`.
+- `app.on_touch(ctx)`: Handle touch and scroll input. Return `true` if state changed.
+- `app.on_key(ctx)`: Handle key, char, paste, and key-up input. Return `true` if state changed.
+- `app.on_resume(ctx)`: Called when the app opens.
+- `app.on_pause(ctx)`: Called when the app closes or another app opens.
+
+For games, put physics or animation updates in `on_tick` and drawing in `render`.
 
 ## Identity
 

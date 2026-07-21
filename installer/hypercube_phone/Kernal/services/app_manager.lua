@@ -32,6 +32,7 @@ local function copy_manifest(manifest, id, path)
         color = manifest.color,
         dock = manifest.dock == true,
         render_mode = render_mode,
+        refresh_rate = manifest.refresh_rate or manifest.fps or manifest.frame_rate,
         path = path,
     }
 end
