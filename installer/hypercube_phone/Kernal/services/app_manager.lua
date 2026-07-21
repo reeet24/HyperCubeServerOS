@@ -88,7 +88,7 @@ local function write_all(path, data)
             return false, err
         end
     end
-    local handle = fs.open(path, "w")
+    local handle = fs.open(path, "wb")
     if not handle then
         return false, "OpenFailed"
     end
@@ -101,7 +101,7 @@ local function read_all(path)
     if not fs or not fs.exists or not fs.open or not fs.exists(path) then
         return nil, "NotFound"
     end
-    local handle = fs.open(path, "r")
+    local handle = fs.open(path, "rb")
     if not handle then
         return nil, "OpenFailed"
     end
