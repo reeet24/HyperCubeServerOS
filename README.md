@@ -175,6 +175,16 @@ The ROM loader decrypts `hypercube.rom`, installs it into memory as `HC_ROM`, ov
 
 Server-hosted app packages live in `appstore/apps`.
 
+Apps may be single-file packages with only `app.lua` or multi-file bundles with local modules and assets:
+
+```text
+appstore/apps/<app_id>/app.lua
+appstore/apps/<app_id>/lib/render.lua
+appstore/apps/<app_id>/assets/title.nfp
+```
+
+Installed apps can use app-local `require("lib.render")` and `HCAPI.app.read("assets/title.nfp")`. Persistent user data still belongs in `HCAPI.fs`.
+
 Current packages:
 
 - `chirper`: Short-post timeline backed by TesseracID.

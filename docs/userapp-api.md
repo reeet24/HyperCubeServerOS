@@ -9,6 +9,29 @@ local C = api.colors
 
 Apps are Lua modules that return an `app` table. The phone app manager reads `app.manifest` and calls app lifecycle functions such as `render(ctx)`, `on_touch(ctx)`, and `on_key(ctx)` when present.
 
+## App Layout
+
+The app entrypoint is always `app.lua`.
+
+Single-file app:
+
+```text
+appstore/apps/example/app.lua
+appstore/apps/example/manifest
+```
+
+Multi-file app:
+
+```text
+appstore/apps/doom/app.lua
+appstore/apps/doom/main.lua
+appstore/apps/doom/lib/render.lua
+appstore/apps/doom/assets/title.nfp
+appstore/apps/doom/levels/e1m1.lua
+```
+
+User-installed apps are copied to the phone under `user/apps/<app_id>/`. The runtime treats that folder as the app's local code/assets bundle.
+
 ## Manifest
 
 ```lua
@@ -28,6 +51,21 @@ local app = {
 - `color`: App accent color.
 - `dock`: `true` for docked apps.
 - `render_mode`: Use `"exclusive"` for full-screen app rendering.
+
+Manifest files in `appstore/apps/<app_id>/manifest` use `textutils.serialize` table format:
+
+```lua
+{
+    title = "Doom",
+    label = "Doom",
+    version = "0.1.0",
+    author = "You",
+    description = "A HyperCubeOS port.",
+    entry = "app.lua",
+}
+```
+
+`entry` is metadata for tooling and should remain `"app.lua"` unless the app manager is updated to support alternate entrypoints.
 
 ## Context
 
@@ -235,11 +273,122 @@ Apps store data in their app-scoped HCFS directory through `api.fs`.
 
 Paths are scoped to the app ID. Apps cannot read another app's files through this API.
 
+Use `api.fs` for saves, settings, caches, and user-created data. Do not use it for bundled read-only assets.
+
+## App Bundle API
+
+Installed multi-file apps can read files from their own app bundle through `api.app`.
+
+- `api.app.read(path)`
+- `api.app.list(path)`
+- `api.app.exists(path)`
+
+Example:
+
+```lua
+local title_image = api.app.read("assets/title.nfp")
+local levels = api.app.list("levels")
+```
+
+Bundle paths are relative to `user/apps/<app_id>/` and reject parent-directory traversal. Apps cannot read another app's bundle through this API.
+
+Use `api.app` for static assets included with the app package: paintutils images, level data, sprite sheets, map data, and local Lua modules.
+
+## App-Local Modules
+
+User apps can split code into local Lua modules and load them with `require`.
+
+```lua
+-- app.lua
+local main = require("main")
+return main.create_app(HCAPI)
+```
+
+```lua
+-- main.lua
+local render = require("lib.render")
+
+local M = {}
+
+function M.create_app(api)
+    return {
+        manifest = {
+            title = "Doom",
+            label = "Doom",
+            render_mode = "exclusive",
+            color = api.colors.red,
+        },
+        render = function(ctx)
+            render.frame(ctx, api)
+        end,
+    }
+end
+
+return M
+```
+
+`require("lib.render")` loads `lib/render.lua` from the same installed app folder. It does not load arbitrary system files.
+
 ## App Store API
 
 `api.apps.install(package)` installs an app package when the shell allows installs.
 
 Returns `false, "InstallUnavailable"` if install support is not available.
+
+### Package Format
+
+Single-file packages are still supported:
+
+```lua
+{
+    id = "notes",
+    title = "Notes",
+    version = "1.0.0",
+    source = "local api = HCAPI\nreturn { manifest = { title = 'Notes' } }\n",
+}
+```
+
+Multi-file packages use `files`:
+
+```lua
+{
+    id = "doom",
+    title = "Doom",
+    version = "0.1.0",
+    author = "You",
+    description = "A HyperCubeOS port.",
+    files = {
+        { path = "app.lua", data = "return require('main')" },
+        { path = "main.lua", data = "-- game code" },
+        { path = "lib/render.lua", data = "-- renderer helpers" },
+        { path = "assets/title.nfp", data = "-- paintutils image data" },
+        { path = "levels/e1m1.lua", data = "return { name = 'E1M1' }" },
+    },
+}
+```
+
+The appstore download response includes both `source` for older single-file installers and `files` for multi-file installers. Current phone installs prefer the bundle and skip duplicate `source` writes when `files` already contains `app.lua`.
+
+Reserved and invalid bundle paths:
+
+- `manifest` is reserved.
+- Empty paths are rejected.
+- Parent traversal such as `../secret` is rejected.
+- Absolute paths are normalized to app-relative paths.
+
+### Server-Side App Folder
+
+You can also publish by placing files directly on the server:
+
+```text
+appstore/apps/doom/app.lua
+appstore/apps/doom/main.lua
+appstore/apps/doom/lib/render.lua
+appstore/apps/doom/assets/title.nfp
+appstore/apps/doom/manifest
+```
+
+The server scans this folder on `appstore.list` and includes all files on `appstore.download`.
 
 ## Dev API
 
@@ -259,5 +408,6 @@ Dev mode is intended for trusted development phones only. Do not expose dev-mode
 4. Register all buttons through `api.screen.button`.
 5. Use `api.screen.wrap` or `api.screen.write_wrap` for user text.
 6. Use `api.fs` for app data.
-7. Use `api.hypernet.request` for service calls not covered by `api.phone`.
-
+7. Use `api.app` for bundled read-only assets.
+8. Split larger apps with app-local `require`.
+9. Use `api.hypernet.request` for service calls not covered by `api.phone`.

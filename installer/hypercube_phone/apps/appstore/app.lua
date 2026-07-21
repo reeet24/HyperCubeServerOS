@@ -154,7 +154,7 @@ local function install_selected(state)
     local ok, result = api.apps.install(reply.result)
     if ok then
         state.error = nil
-        state.status = "Installed " .. tostring(result.id)
+        state.status = "Installed " .. tostring(result.id) .. " (" .. tostring(result.files or 1) .. " files)"
     else
         state.error = result or "InstallFailed"
         state.status = nil
@@ -188,7 +188,8 @@ function app.render(ctx)
         for i = state.scroll + 1, math.min(#state.catalog, state.scroll + visible) do
             local item = state.catalog[i]
             local bg = i == state.selected and C.blue or C.gray
-            local label = tostring(item.title or item.id) .. " " .. tostring(item.version or "")
+            local file_count = item.file_count and (" [" .. tostring(item.file_count) .. "f]") or ""
+            local label = tostring(item.title or item.id) .. " " .. tostring(item.version or "") .. file_count
             ctx.buttons["store_select_" .. tostring(i)] = api.screen.button("store_select_" .. tostring(i), ctx.x + 1, ctx.y + row, math.max(4, ctx.width - 2), truncate(label, ctx.width - 4), {
                 fg = C.white,
                 bg = bg,

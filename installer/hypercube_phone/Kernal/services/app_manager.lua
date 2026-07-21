@@ -45,6 +45,19 @@ local function safe_id(id)
     return id
 end
 
+local function safe_relative(path)
+    path = tostring(path or ""):gsub("\\", "/")
+    path = path:gsub("^/+", ""):gsub("^%./", ""):gsub("//+", "/")
+    if path == "" or path:find("..", 1, true) then
+        return nil, "InvalidPath"
+    end
+    path = path:gsub("[^%w%._%-%/]", "_")
+    if path == "" or path:sub(-1) == "/" then
+        return nil, "InvalidPath"
+    end
+    return path
+end
+
 local function app_order(id)
     local priority = {
         appstore = 1,
@@ -83,6 +96,23 @@ local function write_all(path, data)
     return true
 end
 
+local function read_all(path)
+    if not fs or not fs.exists or not fs.open or not fs.exists(path) then
+        return nil, "NotFound"
+    end
+    local handle = fs.open(path, "r")
+    if not handle then
+        return nil, "OpenFailed"
+    end
+    local data = handle.readAll()
+    handle.close()
+    return data
+end
+
+local function app_dir_for_path(path)
+    return tostring(path or ""):match("^(.*)/app%.lua$") or tostring(path or ""):match("^(.*)/[^/]+$")
+end
+
 local function scan_disk_root(root, apps, seen)
     if not fs or not fs.exists or not fs.list or not fs.exists(root) then
         return
@@ -103,10 +133,69 @@ local function scan_disk_root(root, apps, seen)
     end
 end
 
-local function safe_env(api)
-    local env = {
+local function make_app_file_api(app_dir)
+    return {
+        read = function(path)
+            path = safe_relative(path)
+            if not path then
+                return nil
+            end
+            return read_all(combine(app_dir, path))
+        end,
+        exists = function(path)
+            path = safe_relative(path)
+            return path and fs.exists(combine(app_dir, path)) == true
+        end,
+        list = function(path)
+            path = tostring(path or ""):gsub("\\", "/"):gsub("^/+", ""):gsub("^%./", ""):gsub("//+", "/")
+            if path:find("..", 1, true) then
+                return {}
+            end
+            local full = path == "" and app_dir or combine(app_dir, path)
+            if fs.exists(full) and fs.isDir(full) then
+                return fs.list(full)
+            end
+            return {}
+        end,
+    }
+end
+
+local loadfile_with_env
+
+local function safe_env(api, app_dir)
+    local module_cache = {}
+    local env
+    local function app_require(name)
+        name = tostring(name or ""):gsub("%.", "/")
+        local path, path_err = safe_relative(name .. ".lua")
+        if not path then
+            error(path_err or "InvalidModule", 2)
+        end
+        if module_cache[path] ~= nil then
+            return module_cache[path]
+        end
+        local full = combine(app_dir, path)
+        local loader, err = loadfile_with_env(full, env)
+        if not loader then
+            error(err or ("ModuleNotFound:" .. tostring(name)), 2)
+        end
+        module_cache[path] = true
+        local ok, result = pcall(loader)
+        if not ok then
+            module_cache[path] = nil
+            error(result, 2)
+        end
+        if result ~= nil then
+            module_cache[path] = result
+        end
+        return module_cache[path]
+    end
+
+    api.app = api.app or make_app_file_api(app_dir)
+    env = {
         _G = nil,
         HCAPI = api,
+        require = app_require,
         assert = assert,
         error = error,
         ipairs = ipairs,
@@ -137,7 +226,7 @@ local function safe_env(api)
     return env
 end
 
-local function loadfile_with_env(path, env)
+function loadfile_with_env(path, env)
     local rom = rawget(_G, "HC_ROM")
     if rom and rom.load then
         local loader, err = rom.load(path, env)
@@ -199,7 +288,9 @@ end
 
 function app_manager.load(tphone, descriptor)
     local api = hcapi.create(tphone, descriptor.id)
-    local env = safe_env(api)
+    local app_dir = app_dir_for_path(descriptor.path)
+    api.app = make_app_file_api(app_dir)
+    local env = safe_env(api, app_dir)
     local loader, err = loadfile_with_env(descriptor.path, env)
     if not loader then
         return nil, err
@@ -247,7 +338,8 @@ function app_manager.install(package)
         return false, id_err
     end
     local source = package.source or package.app_lua or package.code
-    if type(source) ~= "string" or source == "" then
+    local package_files = package.files
+    if (type(source) ~= "string" or source == "") and type(package_files) ~= "table" then
         return false, "SourceRequired"
     end
 
@@ -257,20 +349,59 @@ function app_manager.install(package)
     end
 
     local app_dir = combine(USER_APP_ROOT, id)
+    if fs.exists(app_dir) then
+        fs.delete(app_dir)
+    end
     local ok, err = ensure_dir(app_dir)
     if not ok then
         return false, err
     end
 
-    ok, err = write_all(combine(app_dir, "app.lua"), source)
-    if not ok then
-        return false, err
+    local written = 0
+    local has_app_lua = false
+    if type(package_files) == "table" then
+        for key, file in pairs(package_files) do
+            local path, data
+            if type(file) == "table" then
+                path = file.path or file.name
+                data = file.data or file.source or file.contents or file.content
+            else
+                path = key
+                data = file
+            end
+            path, err = safe_relative(path)
+            if not path then
+                return false, err
+            end
+            if path == "manifest" then
+                return false, "ReservedPath"
+            end
+            if path == "app.lua" then
+                has_app_lua = true
+            end
+            ok, err = write_all(combine(app_dir, path), tostring(data or ""))
+            if not ok then
+                return false, err
+            end
+            written = written + 1
+        end
+    end
+
+    if type(source) == "string" and source ~= "" and not has_app_lua then
+        ok, err = write_all(combine(app_dir, "app.lua"), source)
+        if not ok then
+            return false, err
+        end
+        written = written + 1
+    elseif not fs.exists(combine(app_dir, "app.lua")) then
+        return false, "EntrypointRequired"
     end
 
     return true, {
         id = id,
         path = combine(app_dir, "app.lua"),
         version = package.version,
+        files = written,
     }
 end
 

@@ -494,6 +494,19 @@ local function safe_id(id)
     return id
 end
 
+local function safe_relative(path)
+    path = tostring(path or ""):gsub("\\", "/")
+    path = path:gsub("^/+", ""):gsub("^%./", ""):gsub("//+", "/")
+    if path == "" or path:find("..", 1, true) then
+        return nil, "InvalidPath"
+    end
+    path = path:gsub("[^%w%._%-%/]", "_")
+    if path == "" or path:sub(-1) == "/" then
+        return nil, "InvalidPath"
+    end
+    return path
+end
+
 local function ensure_dir(path)
     if not fs or not fs.exists or not fs.makeDir then
         return false, "FsUnavailable"
@@ -559,6 +572,7 @@ local function public_item(item)
         version = item.version,
         author = item.author,
         description = item.description,
+        file_count = item.file_count,
     }
 end
 
@@ -595,8 +609,30 @@ local function save_manifest(app_dir, item)
         version = item.version,
         author = item.author,
         description = item.description,
+        file_count = item.file_count,
+        entry = item.entry or "app.lua",
     }
     return write_all(manifest_path(app_dir), serialize(manifest))
+end
+
+local function collect_files(root, path, files)
+    local full = path == "" and root or combine(root, path)
+    if fs.isDir(full) then
+        for _, child in ipairs(fs.list(full)) do
+            collect_files(root, path == "" and child or combine(path, child), files)
+        end
+    else
+        local relative = safe_relative(path)
+        if relative and relative ~= "manifest" then
+            local data = read_all(full)
+            if data then
+                files[#files + 1] = {
+                    path = relative,
+                    data = data,
+                }
+            end
+        end
+    end
 end
 
 local function read_app(id)
@@ -612,6 +648,13 @@ local function read_app(id)
     end
     local manifest = load_manifest(safe, app_dir)
     manifest.source = source
+    local files = {}
+    collect_files(app_dir, "", files)
+    table.sort(files, function(a, b)
+        return tostring(a.path) < tostring(b.path)
+    end)
+    manifest.files = files
+    manifest.file_count = #files
     return manifest
 end
 
@@ -650,7 +693,11 @@ local function list_apps()
         local safe = safe_id(id)
         local app_dir = safe and combine(APP_ROOT, safe) or nil
         if app_dir and fs.exists(combine(app_dir, "app.lua")) then
-            apps[#apps + 1] = public_item(load_manifest(safe, app_dir))
+            local item = load_manifest(safe, app_dir)
+            local files = {}
+            collect_files(app_dir, "", files)
+            item.file_count = #files
+            apps[#apps + 1] = public_item(item)
         end
     end
 
@@ -682,19 +729,58 @@ local function publish_app(package)
         return false, id_err
     end
     local source = package.source or package.app_lua or package.code
-    if type(source) ~= "string" or source == "" then
+    local package_files = package.files
+    if (type(source) ~= "string" or source == "") and type(package_files) ~= "table" then
         return false, "SourceRequired"
     end
 
     local app_dir = combine(APP_ROOT, id)
+    if fs.exists(app_dir) then
+        fs.delete(app_dir)
+    end
     local ok, err = ensure_dir(app_dir)
     if not ok then
         return false, err
     end
 
-    ok, err = write_all(combine(app_dir, "app.lua"), source)
-    if not ok then
-        return false, err
+    local written = 0
+    local has_app_lua = false
+    if type(package_files) == "table" then
+        for key, file in pairs(package_files) do
+            local path, data
+            if type(file) == "table" then
+                path = file.path or file.name
+                data = file.data or file.source or file.contents or file.content
+            else
+                path = key
+                data = file
+            end
+            path, err = safe_relative(path)
+            if not path then
+                return false, err
+            end
+            if path == "manifest" then
+                return false, "ReservedPath"
+            end
+            if path == "app.lua" then
+                has_app_lua = true
+            end
+            ok, err = write_all(combine(app_dir, path), tostring(data or ""))
+            if not ok then
+                return false, err
+            end
+            written = written + 1
+        end
+    end
+
+    if type(source) == "string" and source ~= "" and not has_app_lua then
+        ok, err = write_all(combine(app_dir, "app.lua"), source)
+        if not ok then
+            return false, err
+        end
+        written = written + 1
+    elseif not fs.exists(combine(app_dir, "app.lua")) then
+        return false, "EntrypointRequired"
     end
 
     ok, err = save_manifest(app_dir, {
@@ -704,6 +790,8 @@ local function publish_app(package)
         version = package.version or "1.0.0",
         author = package.author or package.username or "Server",
         description = package.description or "Server-hosted HyperCube app.",
+        file_count = written,
+        entry = package.entry or "app.lua",
     })
     if not ok then
         return false, err
@@ -751,6 +839,8 @@ function appstore.install(hypercube)
                     author = item.author,
                     description = item.description,
                     source = item.source,
+                    files = item.files,
+                    file_count = item.file_count,
                 })
             else
                 reply(rednet, sender, network.protocol, "appstore.download.result", false, "AppNotFound")
