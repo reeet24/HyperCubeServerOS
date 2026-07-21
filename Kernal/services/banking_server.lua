@@ -148,6 +148,19 @@ function banking_server.install(hypercube)
         elseif message.type == "bank.transfer" then
             ok, result = bank:transfer(owner, username, message.to, message.amount, message.memo, account_name)
             reply(rednet, sender, network.protocol, "bank.transfer.result", ok, result)
+        elseif message.type == "bank.purchase" then
+            ok, result = bank:purchase(
+                owner,
+                username,
+                message.to or message.merchant or message.seller,
+                message.amount,
+                message.item_id or message.item,
+                message.purchase_id,
+                message.memo,
+                message.app_id,
+                account_name
+            )
+            reply(rednet, sender, network.protocol, "bank.purchase.result", ok, result)
         elseif message.type == "bank.credit" then
             ok, result = false, "PhysicalDepositNotEnabled"
             reply(rednet, sender, network.protocol, "bank.credit.result", ok, result)

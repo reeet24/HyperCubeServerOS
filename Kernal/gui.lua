@@ -1,4 +1,5 @@
 local gui = {}
+local updater_ok, github_updater = pcall(require, "Kernal.services.github_updater")
 local DEFAULT_REFRESH_RATE = 4
 
 local C = {
@@ -409,6 +410,172 @@ local function draw_db_explorer(screen, hypercube, state, width, y, height)
     return buttons
 end
 
+local function update_state(state)
+    state.updates = state.updates or {
+        checked = false,
+        status = nil,
+        message = nil,
+        expanded = {
+            added = true,
+            changed = true,
+            deleted = true,
+        },
+    }
+    state.updates.expanded = state.updates.expanded or {}
+    return state.updates
+end
+
+local function refresh_update_status(state, hypercube)
+    local updates = update_state(state)
+    if not updater_ok or not github_updater then
+        updates.checked = true
+        updates.status = nil
+        updates.message = "UpdaterUnavailable"
+        return false
+    end
+    updates.message = "Checking GitHub..."
+    local ok, result = github_updater.check_status({})
+    updates.checked = true
+    if ok then
+        updates.status = result
+        updates.message = result.up_to_date and "Server is up to date." or nil
+        if hypercube.logger then
+            hypercube.logger.info("github update status checked", hypercube.root_context)
+        end
+        return true
+    end
+    updates.status = nil
+    updates.message = tostring(result or "UpdateCheckFailed")
+    if hypercube.logger then
+        hypercube.logger.warn("github update status failed: " .. updates.message, hypercube.root_context)
+    end
+    return false
+end
+
+local function group_count(status, group)
+    return #(((status or {}).groups or {})[group] or {})
+end
+
+local function add_update_group_rows(rows, buttons, screen, updates, group, label)
+    local status = updates.status or {}
+    local items = ((status.groups or {})[group] or {})
+    local expanded = updates.expanded[group] ~= false
+    rows[#rows + 1] = {
+        type = "button",
+        id = "updates_toggle_" .. group,
+        label = (expanded and "v " or "> ") .. label .. " (" .. tostring(#items) .. ")",
+        bg = expanded and C.blue or C.gray,
+    }
+    if expanded then
+        for _, item in ipairs(items) do
+            local prefix = group == "added" and "+ " or (group == "deleted" and "- " or "* ")
+            local text = prefix .. tostring(item.path or "?")
+            if item.from then
+                text = "* " .. tostring(item.from) .. " -> " .. tostring(item.path or "?")
+            end
+            rows[#rows + 1] = {
+                type = "text",
+                text = text,
+                fg = group == "added" and C.green or (group == "deleted" and C.red or C.lightGray),
+            }
+        end
+    end
+end
+
+local function draw_updates(screen, hypercube, state, width, y, height)
+    screen:border(2, y, width - 2, height, C.lightGray, C.black)
+    screen:write(4, y, " GitHub Updates ", C.yellow, C.black)
+
+    local buttons = {}
+    local updates = update_state(state)
+    if not updates.checked then
+        refresh_update_status(state, hypercube)
+    end
+
+    local rows = {}
+    local status = updates.status
+    rows[#rows + 1] = {
+        type = "text",
+        text = "Repo: " .. tostring((status and status.repo) or "reeet24/HyperCubeServerOS"),
+        fg = C.white,
+    }
+    if status then
+        rows[#rows + 1] = { type = "text", text = "Branch: " .. tostring(status.branch), fg = C.lightGray }
+        rows[#rows + 1] = { type = "text", text = "Remote: " .. tostring(status.head_sha or "?"):sub(1, 12), fg = C.lightGray }
+        rows[#rows + 1] = { type = "text", text = "Installed: " .. tostring(status.base_sha or "unknown"):sub(1, 12), fg = C.lightGray }
+        if status.up_to_date then
+            rows[#rows + 1] = { type = "text", text = "Status: up to date", fg = C.green }
+        elseif status.error then
+            rows[#rows + 1] = { type = "text", text = "Status: " .. tostring(status.error), fg = C.red }
+        else
+            rows[#rows + 1] = {
+                type = "text",
+                text = "Status: update available (" .. tostring(status.mode or "?") .. ")",
+                fg = C.yellow,
+            }
+            rows[#rows + 1] = {
+                type = "text",
+                text = "Files: +" .. tostring(group_count(status, "added"))
+                    .. " *" .. tostring(group_count(status, "changed"))
+                    .. " -" .. tostring(group_count(status, "deleted")),
+                fg = C.white,
+            }
+        end
+    elseif updates.message then
+        rows[#rows + 1] = { type = "text", text = "Status: " .. tostring(updates.message), fg = C.red }
+    end
+
+    rows[#rows + 1] = { type = "spacer" }
+    rows[#rows + 1] = {
+        type = "actions",
+    }
+    if status and not status.up_to_date and not status.error then
+        add_update_group_rows(rows, buttons, screen, updates, "added", "Added")
+        add_update_group_rows(rows, buttons, screen, updates, "changed", "Changed")
+        add_update_group_rows(rows, buttons, screen, updates, "deleted", "Deleted")
+    elseif updates.message then
+        rows[#rows + 1] = { type = "text", text = updates.message, fg = status and C.green or C.orange }
+    end
+
+    local visible = math.max(1, height - 2)
+    local max_scroll = math.max(0, #rows - visible)
+    local scroll = clamp(get_scroll(state, "updates"), 0, max_scroll)
+    set_scroll(state, "updates", scroll, max_scroll)
+    state.max_scroll.updates = max_scroll
+
+    local row_y = y + 1
+    for i = scroll + 1, math.min(#rows, scroll + visible) do
+        local row = rows[i]
+        if row.type == "button" then
+            buttons[row.id] = screen:button(row.id, 4, row_y, math.max(6, width - 6), truncate(row.label, width - 8), {
+                fg = C.white,
+                bg = row.bg or C.gray,
+            })
+        elseif row.type == "actions" then
+            buttons.updates_refresh = screen:button("updates_refresh", 4, row_y, 9, "Refresh", {
+                fg = C.white,
+                bg = C.blue,
+            })
+            if status and not status.up_to_date and not status.error then
+                buttons.updates_install_reboot = screen:button("updates_install_reboot", 15, row_y, math.max(8, math.min(18, width - 18)), "Install+Reboot", {
+                    fg = C.black,
+                    bg = C.yellow,
+                })
+            end
+        elseif row.type == "spacer" then
+            -- Blank row.
+        else
+            screen:write(4, row_y, truncate(row.text or "", width - 6), row.fg or C.white, C.black)
+        end
+        row_y = row_y + 1
+        if row_y >= y + height then
+            break
+        end
+    end
+    draw_scroll_hint(screen, width, y, height, scroll, max_scroll)
+    return buttons
+end
+
 local function create_screen_manager(default_screen)
     local manager = {
         active = default_screen,
@@ -550,6 +717,50 @@ local function ensure_screen_manager(state, hypercube)
             return false
         end,
     })
+    screens:define("updates", {
+        render = function(ctx)
+            ctx.state.panel_buttons = draw_updates(ctx.screen, hypercube, ctx.state, ctx.width, ctx.y, ctx.height)
+        end,
+        on_touch = function(ctx)
+            local id = tostring(ctx.button_id or "")
+            local updates = update_state(ctx.state)
+            if id == "updates_refresh" then
+                updates.checked = false
+                refresh_update_status(ctx.state, hypercube)
+                return true
+            elseif id == "updates_install_reboot" then
+                if not updater_ok or not github_updater then
+                    updates.message = "Install failed: UpdaterUnavailable"
+                    return true
+                end
+                if not updates.status then
+                    refresh_update_status(ctx.state, hypercube)
+                end
+                local ok, result = github_updater.install(updates.status or {}, {})
+                if ok then
+                    updates.message = "Installed " .. tostring(result.mode or "update") .. "; rebooting..."
+                    if hypercube.logger then
+                        hypercube.logger.warn("github update installed; rebooting", hypercube.root_context)
+                    end
+                    if os.reboot then
+                        os.reboot()
+                    end
+                    return true
+                end
+                updates.message = "Install failed: " .. tostring(result)
+                if hypercube.logger then
+                    hypercube.logger.warn("github update failed: " .. tostring(result), hypercube.root_context)
+                end
+                return true
+            end
+            local group = id:match("^updates_toggle_(.+)$")
+            if group then
+                updates.expanded[group] = updates.expanded[group] == false
+                return true
+            end
+            return false
+        end,
+    })
     state.screens = screens
     return screens
 end
@@ -559,7 +770,7 @@ local function draw_footer(screen, width, height, active_view)
     local y = height
     screen:rect(1, y, width, 1, C.gray)
 
-    if width < 58 then
+    if width < 70 then
         buttons.refresh = screen:button("refresh", 1, y, 3, "R", {
             fg = C.white,
             bg = C.blue,
@@ -580,6 +791,12 @@ local function draw_footer(screen, width, height, active_view)
             fg = active_view == "db" and C.black or C.white,
             bg = active_view == "db" and C.yellow or C.gray,
         })
+        if width >= 25 then
+            buttons.updates = screen:button("updates", 21, y, 3, "U", {
+                fg = active_view == "updates" and C.black or C.white,
+                bg = active_view == "updates" and C.yellow or C.gray,
+            })
+        end
         buttons.shutdown = screen:button("shutdown", math.max(1, width - 2), y, 3, "X", {
             fg = C.white,
             bg = C.red,
@@ -606,6 +823,10 @@ local function draw_footer(screen, width, height, active_view)
     buttons.db = screen:button("db", 47, y, 3, "DB", {
         fg = active_view == "db" and C.black or C.white,
         bg = active_view == "db" and C.yellow or C.gray,
+    })
+    buttons.updates = screen:button("updates", 51, y, 8, "Updates", {
+        fg = active_view == "updates" and C.black or C.white,
+        bg = active_view == "updates" and C.yellow or C.gray,
     })
     buttons.shutdown = screen:button("shutdown", width - 7, y, 8, "Shutdown", {
         fg = C.white,
@@ -721,6 +942,9 @@ function gui.run(hypercube)
             elseif id == "db" then
                 screens:set("db")
                 state.view = "db"
+            elseif id == "updates" then
+                screens:set("updates")
+                state.view = "updates"
             elseif id and screens:touch({
                 button_id = id,
                 state = state,
@@ -755,6 +979,10 @@ function gui.run(hypercube)
             elseif key == keys.d then
                 screens:set("db")
                 state.view = "db"
+                state.needs_render = true
+            elseif key == keys.u then
+                screens:set("updates")
+                state.view = "updates"
                 state.needs_render = true
             elseif key == keys.up then
                 scroll_state(state, state.view or "logs", -1, state.max_scroll[state.view or "logs"] or 0)

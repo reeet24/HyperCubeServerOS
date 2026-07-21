@@ -1126,7 +1126,8 @@ function RednetDriver:poll(timeout)
                 if ok then
                     ok, result = self.phone:pay(
                         message_identity(sender, message, self.clients),
-                        message_username(sender, message, self.clients)
+                        message_username(sender, message, self.clients),
+                        message.purchase_id
                     )
                 end
             end

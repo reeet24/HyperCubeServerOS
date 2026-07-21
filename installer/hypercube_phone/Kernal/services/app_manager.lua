@@ -4,6 +4,8 @@ local app_manager = {}
 
 local APP_ROOT = "apps"
 local USER_APP_ROOT = "user/apps"
+local APP_INTEGRITY_FILE = ".hcapp_integrity"
+local APP_INTEGRITY_KEY = "HyperCubeAppIntegrity:v1"
 
 local function combine(a, b)
     if fs and fs.combine then
@@ -108,6 +110,104 @@ local function read_all(path)
     local data = handle.readAll()
     handle.close()
     return data
+end
+
+local function checksum(text)
+    text = tostring(text or "")
+    local a = 1
+    local b = 0
+    for i = 1, #text do
+        a = (a + text:byte(i)) % 65521
+        b = (b + a) % 65521
+    end
+    return tostring((b * 65536 + a) % 2147483647)
+end
+
+local function xor_crypt(data, key)
+    if not bit32 then
+        return nil, "Bit32Unavailable"
+    end
+    data = tostring(data or "")
+    key = tostring(key or "")
+    if key == "" then
+        return nil, "KeyRequired"
+    end
+
+    local out = {}
+    for i = 1, #data do
+        local key_byte = key:byte(((i - 1) % #key) + 1)
+        out[i] = string.char(bit32.bxor(data:byte(i), key_byte))
+    end
+    return table.concat(out)
+end
+
+local function encode_integrity(metadata)
+    if not textutils or not textutils.serialize then
+        return nil, "TextutilsUnavailable"
+    end
+    local payload = textutils.serialize(metadata or {})
+    return xor_crypt(payload, APP_INTEGRITY_KEY)
+end
+
+local function decode_integrity(data)
+    if not textutils or not textutils.unserialize then
+        return nil, "TextutilsUnavailable"
+    end
+    local decoded, err = xor_crypt(data, APP_INTEGRITY_KEY)
+    if not decoded then
+        return nil, err
+    end
+    local ok, result = pcall(textutils.unserialize, decoded)
+    if not ok or type(result) ~= "table" then
+        return nil, "AppIntegrityDecodeFailed"
+    end
+    return result
+end
+
+local function integrity_body(files)
+    local lines = {}
+    for _, file in ipairs(files or {}) do
+        lines[#lines + 1] = tostring(file.path) .. "\n" .. tostring(file.checksum)
+    end
+    return table.concat(lines, "\n--\n")
+end
+
+local function verify_user_app_integrity(id, app_dir)
+    local encoded, err = read_all(combine(app_dir, APP_INTEGRITY_FILE))
+    if not encoded then
+        return false, "AppIntegrityMissing"
+    end
+    local metadata
+    metadata, err = decode_integrity(encoded)
+    if not metadata then
+        return false, err
+    end
+    if metadata.format ~= "HyperCubeAppIntegrity" then
+        return false, "AppIntegrityInvalid"
+    end
+    if tostring(metadata.app_id or "") ~= tostring(id or "") then
+        return false, "AppIntegrityAppMismatch"
+    end
+    if not metadata.files or #metadata.files == 0 then
+        return false, "AppIntegrityEmpty"
+    end
+    if checksum(integrity_body(metadata.files)) ~= tostring(metadata.checksum or "") then
+        return false, "AppIntegrityChecksumMismatch"
+    end
+    for _, file in ipairs(metadata.files) do
+        local path = safe_relative(file.path)
+        if not path then
+            return false, "AppIntegrityInvalidPath"
+        end
+        local data = read_all(combine(app_dir, path))
+        if data == nil then
+            return false, "AppFileMissing:" .. tostring(path)
+        end
+        if checksum(data) ~= tostring(file.checksum or "") then
+            return false, "AppChecksumMismatch:" .. tostring(path)
+        end
+    end
+    return true, metadata
 end
 
 local function app_dir_for_path(path)
@@ -290,6 +390,12 @@ end
 function app_manager.load(tphone, descriptor)
     local api = hcapi.create(tphone, descriptor.id)
     local app_dir = app_dir_for_path(descriptor.path)
+    if tostring(app_dir or ""):sub(1, #USER_APP_ROOT + 1) == USER_APP_ROOT .. "/" then
+        local verified, verify_err = verify_user_app_integrity(descriptor.id, app_dir)
+        if not verified then
+            return nil, verify_err
+        end
+    end
     api.app = make_app_file_api(app_dir)
     local env = safe_env(api, app_dir)
     local loader, err = loadfile_with_env(descriptor.path, env)
@@ -330,6 +436,56 @@ function app_manager.load_all(tphone)
     return apps
 end
 
+local function decode_package_integrity(package)
+    local encoded = package.integrity_encoded or package.encoded_integrity or package.app_integrity_encoded
+    if type(encoded) == "string" and encoded ~= "" then
+        return decode_integrity(encoded)
+    end
+    return nil, "AppIntegrityRequired"
+end
+
+local function verify_package_integrity(id, version, files, package)
+    local metadata, err = decode_package_integrity(package)
+    if not metadata then
+        return nil, err
+    end
+    if metadata.format ~= "HyperCubeAppIntegrity" then
+        return nil, "AppIntegrityInvalid"
+    end
+    if tostring(metadata.app_id or "") ~= tostring(id or "") then
+        return nil, "AppIntegrityAppMismatch"
+    end
+    if checksum(integrity_body(metadata.files or {})) ~= tostring(metadata.checksum or "") then
+        return nil, "AppIntegrityChecksumMismatch"
+    end
+
+    local by_path = {}
+    for _, file in ipairs(files or {}) do
+        by_path[file.path] = file.data or ""
+    end
+    local has_app_lua = false
+    for _, file in ipairs(metadata.files or {}) do
+        local path = safe_relative(file.path)
+        if not path then
+            return nil, "AppIntegrityInvalidPath"
+        end
+        if path == "app.lua" then
+            has_app_lua = true
+        end
+        if by_path[path] == nil then
+            return nil, "AppFileMissing:" .. tostring(path)
+        end
+        if checksum(by_path[path]) ~= tostring(file.checksum or "") then
+            return nil, "AppChecksumMismatch:" .. tostring(path)
+        end
+    end
+    if not has_app_lua then
+        return nil, "AppIntegrityEntrypointMissing"
+    end
+    metadata.app_version = metadata.app_version or version
+    return metadata
+end
+
 function app_manager.install(package)
     if type(package) ~= "table" then
         return false, "InvalidPackage"
@@ -342,6 +498,60 @@ function app_manager.install(package)
     local package_files = package.files
     if (type(source) ~= "string" or source == "") and type(package_files) ~= "table" then
         return false, "SourceRequired"
+    end
+
+    local install_files = {}
+    local err
+    local has_app_lua = false
+    if type(package_files) == "table" then
+        for key, file in pairs(package_files) do
+            local path, data
+            if type(file) == "table" then
+                path = file.path or file.name
+                data = file.data or file.source or file.contents or file.content
+            else
+                path = key
+                data = file
+            end
+            path, err = safe_relative(path)
+            if not path then
+                return false, err
+            end
+            if path == "manifest" or path == APP_INTEGRITY_FILE then
+                return false, "ReservedPath"
+            end
+            if path == "app.lua" then
+                has_app_lua = true
+            end
+            install_files[#install_files + 1] = {
+                path = path,
+                data = tostring(data or ""),
+            }
+        end
+    end
+
+    if type(source) == "string" and source ~= "" and not has_app_lua then
+        install_files[#install_files + 1] = {
+            path = "app.lua",
+            data = source,
+        }
+        has_app_lua = true
+    end
+    if not has_app_lua then
+        return false, "EntrypointRequired"
+    end
+
+    table.sort(install_files, function(a, b)
+        return a.path < b.path
+    end)
+    local integrity, integrity_err = verify_package_integrity(id, package.version, install_files, package)
+    if not integrity then
+        return false, integrity_err
+    end
+    local encoded_integrity
+    encoded_integrity, integrity_err = encode_integrity(integrity)
+    if not encoded_integrity then
+        return false, integrity_err
     end
 
     local root_ok, root_err = ensure_dir(USER_APP_ROOT)
@@ -359,43 +569,16 @@ function app_manager.install(package)
     end
 
     local written = 0
-    local has_app_lua = false
-    if type(package_files) == "table" then
-        for key, file in pairs(package_files) do
-            local path, data
-            if type(file) == "table" then
-                path = file.path or file.name
-                data = file.data or file.source or file.contents or file.content
-            else
-                path = key
-                data = file
-            end
-            path, err = safe_relative(path)
-            if not path then
-                return false, err
-            end
-            if path == "manifest" then
-                return false, "ReservedPath"
-            end
-            if path == "app.lua" then
-                has_app_lua = true
-            end
-            ok, err = write_all(combine(app_dir, path), tostring(data or ""))
-            if not ok then
-                return false, err
-            end
-            written = written + 1
-        end
-    end
-
-    if type(source) == "string" and source ~= "" and not has_app_lua then
-        ok, err = write_all(combine(app_dir, "app.lua"), source)
+    for _, file in ipairs(install_files) do
+        ok, err = write_all(combine(app_dir, file.path), file.data)
         if not ok then
             return false, err
         end
         written = written + 1
-    elseif not fs.exists(combine(app_dir, "app.lua")) then
-        return false, "EntrypointRequired"
+    end
+    ok, err = write_all(combine(app_dir, APP_INTEGRITY_FILE), encoded_integrity)
+    if not ok then
+        return false, err
     end
 
     return true, {
@@ -403,6 +586,8 @@ function app_manager.install(package)
         path = combine(app_dir, "app.lua"),
         version = package.version,
         files = written,
+        protected_files = #(integrity.files or {}),
+        mutable_paths = integrity.mutable_paths or {},
     }
 end
 

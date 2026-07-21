@@ -176,7 +176,8 @@ Subscription:
 1. Phone calls `phone.subscribe`.
 2. Server requires an open bank account for the TesseracID.
 3. First subscription assigns a number and sets one free week.
-4. Later renewals charge the linked bank account weekly.
+4. Later renewals charge the linked bank account weekly through `bank.purchase`.
+5. Clients may pass `purchase_id` to `phone.pay` for retry-safe renewals.
 
 Messaging:
 
@@ -197,6 +198,7 @@ Regular user operations:
 - `bank.status`: Returns public account state.
 - `bank.history`: Returns recent transaction history.
 - `bank.transfer`: Transfers TC between accounts.
+- `bank.purchase`: Idempotent in-app purchase transfer keyed by `purchase_id`.
 
 Trusted ATM/branch operations:
 
@@ -255,4 +257,3 @@ The default authorized account is `tesserac`.
 - New network handler family: register through `hypercube.network:register_handler(...)`
 - New persistent lookup by non-primary key: create an explicit database index record
 - New web portal page: add a route in `moderation_server.lua` or publish HCTML through `web.publish`
-

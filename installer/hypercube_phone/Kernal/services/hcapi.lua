@@ -519,6 +519,61 @@ local function make_net_api(tphone)
     }
 end
 
+local function make_bank_api(tphone, app_id)
+    local net = make_net_api(tphone)
+    local function request(message, expected, timeout)
+        local reply, err = net.request(message, expected, timeout or 8)
+        if reply and reply.ok then
+            return true, reply.result
+        end
+        return false, (reply and reply.error) or err or "BankRequestFailed"
+    end
+
+    return {
+        open = function(account_name, minecraft_name)
+            return request({
+                type = "bank.open",
+                account_name = account_name,
+                minecraft_name = minecraft_name,
+            }, "bank.open.result")
+        end,
+        status = function(account_name)
+            return request({
+                type = "bank.status",
+                account_name = account_name,
+            }, "bank.status.result")
+        end,
+        history = function(account_name)
+            return request({
+                type = "bank.history",
+                account_name = account_name,
+            }, "bank.history.result")
+        end,
+        transfer = function(to, amount, memo, account_name)
+            return request({
+                type = "bank.transfer",
+                to = to,
+                amount = amount,
+                memo = memo,
+                account_name = account_name,
+            }, "bank.transfer.result")
+        end,
+        purchase = function(options)
+            options = options or {}
+            return request({
+                type = "bank.purchase",
+                to = options.to or options.merchant or options.seller,
+                amount = options.amount,
+                item_id = options.item_id or options.item,
+                purchase_id = options.purchase_id,
+                memo = options.memo,
+                app_id = options.app_id or app_id,
+                account_name = options.account_name,
+            }, "bank.purchase.result")
+        end,
+    }
+end
+
 local function make_phone_api(tphone)
     local net = make_net_api(tphone)
     local function request(message, expected, timeout)
@@ -536,8 +591,8 @@ local function make_phone_api(tphone)
         subscribe = function()
             return request({ type = "phone.subscribe" }, "phone.subscribe.result")
         end,
-        pay = function()
-            return request({ type = "phone.pay" }, "phone.pay.result")
+        pay = function(purchase_id)
+            return request({ type = "phone.pay", purchase_id = purchase_id }, "phone.pay.result")
         end,
         send = function(to, body)
             return request({ type = "phone.send", to = to, body = body }, "phone.send.result")
@@ -668,6 +723,7 @@ function hcapi.create(tphone, app_id)
         },
         screen = make_screen_api(tphone),
         hypernet = make_net_api(tphone),
+        bank = make_bank_api(tphone, app_id),
         phone = make_phone_api(tphone),
         fs = make_fs_api(tphone.hcfs, app_id),
         dev = make_dev_api(tphone),

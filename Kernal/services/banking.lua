@@ -60,6 +60,10 @@ local function atm_fee_key(source_device_id, fee_id)
     return "bank:atm_fee:" .. tostring(source_device_id) .. ":" .. tostring(fee_id)
 end
 
+local function purchase_key(owner, account_name, purchase_id)
+    return "bank:purchase:" .. tostring(owner) .. ":" .. tostring(account_name or "main") .. ":" .. tostring(purchase_id)
+end
+
 local function normalize_username(username)
     username = tostring(username or ""):lower():gsub("%s+", "")
     username = username:gsub("[^%w_%-%.]", "")
@@ -143,6 +147,15 @@ local function normalize_fee_id(fee_id)
         return nil, "FeeIdRequired"
     end
     return fee_id
+end
+
+local function normalize_purchase_id(purchase_id)
+    purchase_id = tostring(purchase_id or ""):gsub("%s+", "")
+    purchase_id = purchase_id:gsub("[^%w_%-%.:]", "")
+    if purchase_id == "" or #purchase_id > 80 then
+        return nil, "PurchaseIdRequired"
+    end
+    return purchase_id
 end
 
 local function amount_to_units(amount)
@@ -687,6 +700,179 @@ function BankService:transfer(owner, username, to_identifier, amount, memo, acco
             username = recipient.username,
         },
     }
+end
+
+function BankService:purchase(owner, username, to_identifier, amount, item_id, purchase_id, memo, app_id, account_name)
+    local ok, err = self:require_database()
+    if not ok then
+        return false, err
+    end
+    owner, err = require_owner(owner)
+    if not owner then
+        return false, err
+    end
+    amount, err = normalize_amount(amount)
+    if not amount then
+        return false, err
+    end
+    purchase_id, err = normalize_purchase_id(purchase_id)
+    if not purchase_id then
+        return false, err
+    end
+    item_id = tostring(item_id or "item"):gsub("%s+", "_"):gsub("[^%w_%-%.:]", "")
+    if item_id == "" or #item_id > 64 then
+        return false, "ItemIdRequired"
+    end
+    app_id = tostring(app_id or "app"):gsub("%s+", "_"):gsub("[^%w_%-%.:]", "")
+    if app_id == "" or #app_id > 64 then
+        app_id = "app"
+    end
+    memo = tostring(memo or ("Purchase: " .. item_id)):sub(1, 80)
+
+    local account_name_err
+    account_name, account_name_err = normalize_account_name(account_name)
+    if not account_name then
+        return false, account_name_err
+    end
+
+    local idempotency_key = purchase_key(owner, account_name, purchase_id)
+    local existing = self.database:get(idempotency_key)
+    if existing then
+        if existing.result then
+            return true, existing.result
+        end
+        return false, existing.status == "failed" and "PurchaseFailed" or "PurchasePending"
+    end
+
+    local payer_owner, payer = resolve_account(self.database, owner, username, account_name)
+    if not payer then
+        return false, "AccountRequired"
+    end
+    if (payer.balance or 0) < amount then
+        return false, "InsufficientFunds"
+    end
+
+    local merchant_owner, merchant = self:resolve_recipient(to_identifier)
+    if not merchant_owner then
+        return false, merchant
+    end
+    if merchant_owner == payer_owner then
+        return false, "CannotPurchaseFromSelf"
+    end
+
+    local tx_id = "iap_" .. tostring(now()) .. "_" .. tostring(math.floor((os.clock() or 0) * 1000))
+    local reserve_ok, reserve_err = self.database:set(idempotency_key, {
+        owner = owner,
+        account_owner = payer_owner,
+        merchant = merchant_owner,
+        amount = amount,
+        item_id = item_id,
+        purchase_id = purchase_id,
+        app_id = app_id,
+        memo = memo,
+        status = "pending",
+        at = now(),
+    })
+    if not reserve_ok then
+        return false, reserve_err
+    end
+
+    payer.balance = subtract_amount(payer.balance, amount)
+    payer.updated_at = now()
+    merchant.balance = add_amount(merchant.balance, amount)
+    merchant.updated_at = now()
+
+    local set_payer, set_payer_err = self.database:set(account_key(payer_owner), payer)
+    if not set_payer then
+        self.database:set(idempotency_key, {
+            owner = owner,
+            account_owner = payer_owner,
+            merchant = merchant_owner,
+            amount = amount,
+            item_id = item_id,
+            purchase_id = purchase_id,
+            app_id = app_id,
+            memo = memo,
+            status = "failed",
+            error = set_payer_err,
+            at = now(),
+        })
+        return false, set_payer_err
+    end
+    local set_merchant, set_merchant_err = self.database:set(account_key(merchant_owner), merchant)
+    if not set_merchant then
+        payer.balance = add_amount(payer.balance, amount)
+        self.database:set(account_key(payer_owner), payer)
+        self.database:set(idempotency_key, {
+            owner = owner,
+            account_owner = payer_owner,
+            merchant = merchant_owner,
+            amount = amount,
+            item_id = item_id,
+            purchase_id = purchase_id,
+            app_id = app_id,
+            memo = memo,
+            status = "failed",
+            error = set_merchant_err,
+            at = now(),
+        })
+        return false, set_merchant_err
+    end
+
+    append_history(self.database, payer_owner, {
+        id = tx_id,
+        kind = "purchase",
+        direction = "out",
+        to = merchant_owner,
+        amount = amount,
+        balance = payer.balance,
+        memo = memo,
+        item_id = item_id,
+        purchase_id = purchase_id,
+        app_id = app_id,
+        at = now(),
+    })
+    append_history(self.database, merchant_owner, {
+        id = tx_id,
+        kind = "purchase",
+        direction = "in",
+        from = payer_owner,
+        amount = amount,
+        balance = merchant.balance,
+        memo = memo,
+        item_id = item_id,
+        purchase_id = purchase_id,
+        app_id = app_id,
+        at = now(),
+    })
+
+    local result = {
+        transaction_id = tx_id,
+        purchase_id = purchase_id,
+        item_id = item_id,
+        app_id = app_id,
+        amount = amount,
+        account = public_account(payer),
+        merchant = {
+            owner = merchant.owner,
+            username = merchant.username,
+            account_name = merchant.account_name or "main",
+        },
+    }
+    self.database:set(idempotency_key, {
+        owner = owner,
+        account_owner = payer_owner,
+        merchant = merchant_owner,
+        amount = amount,
+        item_id = item_id,
+        purchase_id = purchase_id,
+        app_id = app_id,
+        memo = memo,
+        status = "complete",
+        result = result,
+        at = now(),
+    })
+    return true, result
 end
 
 function BankService:credit(owner, amount, memo, source)

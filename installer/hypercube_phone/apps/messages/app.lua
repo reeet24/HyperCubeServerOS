@@ -339,10 +339,17 @@ local function subscribe(state)
 end
 
 local function pay_bill(state)
-    local ok, result = api.phone.pay()
+    if tostring(state.pending_bill_purchase_id or "") == "" then
+        local status = state.status or {}
+        state.pending_bill_purchase_id = "messages:phone_week:" .. tostring(status.number or "number") .. ":" .. tostring(status.paid_until or api.time())
+        api.fs.write("phone_bill_purchase_id.txt", state.pending_bill_purchase_id)
+    end
+    local ok, result = api.phone.pay(state.pending_bill_purchase_id)
     if ok then
         state.status = result
         state.error = nil
+        state.pending_bill_purchase_id = ""
+        api.fs.write("phone_bill_purchase_id.txt", "")
     else
         state.error = result or "PaymentFailed"
     end
@@ -373,6 +380,7 @@ local function ensure_state(state)
     state.error = nil
     state.router = nil
     state.last_auto_refresh = 0
+    state.pending_bill_purchase_id = api.fs.read("phone_bill_purchase_id.txt") or ""
 end
 
 local function draw_tabs(ctx, active)

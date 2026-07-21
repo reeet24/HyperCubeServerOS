@@ -92,6 +92,7 @@ function PhoneService.new(options)
     self.database = options.database
     self.bank = options.bank
     self.weekly_bill = options.weekly_bill or DEFAULT_BILL
+    self.phone_merchant = options.phone_merchant or options.merchant or "tesserac"
     return self
 end
 
@@ -163,10 +164,31 @@ function PhoneService:require_bank_account(owner, username)
     return true, account, username, account.account_name
 end
 
-function PhoneService:charge_renewal(owner, username)
+function PhoneService:charge_renewal(owner, username, purchase_id)
     local ok, account, bank_username, account_name = self:require_bank_account(owner, username)
     if not ok then
         return false, account
+    end
+    if self.bank.purchase then
+        purchase_id = tostring(purchase_id or ("phone_week:" .. tostring(owner) .. ":" .. tostring(now())))
+        local purchased, result = self.bank:purchase(
+            owner,
+            bank_username or username,
+            self.phone_merchant,
+            self.weekly_bill,
+            "phone_week",
+            purchase_id,
+            "Tesserac Phone weekly service",
+            "messages",
+            account_name
+        )
+        if not purchased then
+            if result == "AccountRequired" then
+                return false, "BankAccountRequired"
+            end
+            return false, result
+        end
+        return true, result or account
     end
     if not self.bank.debit then
         return false, "BankAccountRequired"
@@ -279,7 +301,7 @@ function PhoneService:subscribe(owner, username)
     return true, record
 end
 
-function PhoneService:pay(owner, username)
+function PhoneService:pay(owner, username, purchase_id)
     local ok, db_err = self:require_database()
     if not ok then
         return false, db_err
@@ -293,8 +315,15 @@ function PhoneService:pay(owner, username)
     if not record then
         return false, "NoPhoneNumber"
     end
+    purchase_id = tostring(purchase_id or ("phone_week:" .. tostring(owner) .. ":" .. tostring(record.paid_until or 0)))
+    if record.last_payment_purchase_id == purchase_id then
+        record.active = (record.paid_until or 0) > now()
+        record.has_number = true
+        record.bill_due = not record.active
+        return true, record
+    end
 
-    local charge_ok, charge_err = self:charge_renewal(owner, username)
+    local charge_ok, charge_err = self:charge_renewal(owner, username, purchase_id)
     if not charge_ok then
         return false, charge_err
     end
@@ -302,6 +331,7 @@ function PhoneService:pay(owner, username)
     local base = math.max(record.paid_until or 0, now())
     record.paid_until = base + WEEK_MS
     record.last_payment_at = now()
+    record.last_payment_purchase_id = purchase_id
     record.weekly_bill = self.weekly_bill
     record.bank_account_linked = true
     local set_ok, set_err = self.database:set(account_key(owner), record)

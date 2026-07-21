@@ -3,6 +3,8 @@ local appstore = {}
 local APPSTORE_ROOT = "appstore"
 local APP_ROOT = "appstore/apps"
 local TOKEN_PATH = "appstore/admin_token"
+local APP_INTEGRITY_FILE = ".hcapp_integrity"
+local APP_INTEGRITY_KEY = "HyperCubeAppIntegrity:v1"
 
 local SEED_APPS = {
     {
@@ -561,6 +563,98 @@ local function unserialize(value)
     return nil
 end
 
+local function checksum(text)
+    text = tostring(text or "")
+    local a = 1
+    local b = 0
+    for i = 1, #text do
+        a = (a + text:byte(i)) % 65521
+        b = (b + a) % 65521
+    end
+    return tostring((b * 65536 + a) % 2147483647)
+end
+
+local function xor_crypt(data, key)
+    if not bit32 then
+        return nil, "Bit32Unavailable"
+    end
+    data = tostring(data or "")
+    key = tostring(key or "")
+    if key == "" then
+        return nil, "KeyRequired"
+    end
+    local out = {}
+    for i = 1, #data do
+        local key_byte = key:byte(((i - 1) % #key) + 1)
+        out[i] = string.char(bit32.bxor(data:byte(i), key_byte))
+    end
+    return table.concat(out)
+end
+
+local function normalize_mutable_paths(paths)
+    local out = {}
+    for _, path in ipairs(type(paths) == "table" and paths or {}) do
+        local safe = safe_relative(path)
+        if safe and safe ~= "app.lua" and safe ~= APP_INTEGRITY_FILE then
+            out[#out + 1] = safe
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+local function path_is_mutable(path, mutable_paths)
+    path = tostring(path or "")
+    if path == "app.lua" or path == APP_INTEGRITY_FILE then
+        return false
+    end
+    for _, mutable in ipairs(mutable_paths or {}) do
+        if path == mutable or path:sub(1, #mutable + 1) == mutable .. "/" then
+            return true
+        end
+    end
+    return false
+end
+
+local function integrity_body(files)
+    local lines = {}
+    for _, file in ipairs(files or {}) do
+        lines[#lines + 1] = tostring(file.path) .. "\n" .. tostring(file.checksum)
+    end
+    return table.concat(lines, "\n--\n")
+end
+
+local function build_integrity(item, files)
+    local mutable_paths = normalize_mutable_paths(item.mutable_paths or item.mutable or item.unchecked_paths or item.mod_paths)
+    local protected = {}
+    for _, file in ipairs(files or {}) do
+        local path = safe_relative(file.path)
+        if path and path ~= APP_INTEGRITY_FILE and not path_is_mutable(path, mutable_paths) then
+            protected[#protected + 1] = {
+                path = path,
+                checksum = checksum(file.data or ""),
+            }
+        end
+    end
+    table.sort(protected, function(a, b)
+        return a.path < b.path
+    end)
+    return {
+        format = "HyperCubeAppIntegrity",
+        version = 1,
+        app_id = item.id,
+        app_version = item.version,
+        mutable_paths = mutable_paths,
+        files = protected,
+        checksum = checksum(integrity_body(protected)),
+    }
+end
+
+local function encode_integrity(metadata)
+    local payload = serialize(metadata)
+    return xor_crypt(payload, APP_INTEGRITY_KEY)
+end
+
 local function manifest_path(app_dir)
     return combine(app_dir, "manifest")
 end
@@ -573,6 +667,8 @@ local function public_item(item)
         author = item.author,
         description = item.description,
         file_count = item.file_count,
+        protected_file_count = item.protected_file_count,
+        mutable_paths = item.mutable_paths,
     }
 end
 
@@ -583,6 +679,7 @@ local function default_manifest(id)
         version = "1.0.0",
         author = "Server",
         description = "Server-hosted HyperCube app.",
+        mutable_paths = {},
     }
 end
 
@@ -611,6 +708,11 @@ local function save_manifest(app_dir, item)
         description = item.description,
         file_count = item.file_count,
         entry = item.entry or "app.lua",
+        color = item.color,
+        dock = item.dock,
+        render_mode = item.render_mode,
+        refresh_rate = item.refresh_rate or item.fps or item.frame_rate,
+        mutable_paths = normalize_mutable_paths(item.mutable_paths or item.mutable or item.unchecked_paths or item.mod_paths),
     }
     return write_all(manifest_path(app_dir), serialize(manifest))
 end
@@ -623,7 +725,7 @@ local function collect_files(root, path, files)
         end
     else
         local relative = safe_relative(path)
-        if relative and relative ~= "manifest" then
+        if relative and relative ~= "manifest" and relative ~= APP_INTEGRITY_FILE then
             local data = read_all(full)
             if data then
                 files[#files + 1] = {
@@ -655,6 +757,9 @@ local function read_app(id)
     end)
     manifest.files = files
     manifest.file_count = #files
+    manifest.integrity = build_integrity(manifest, files)
+    manifest.integrity_encoded = encode_integrity(manifest.integrity)
+    manifest.protected_file_count = #(manifest.integrity.files or {})
     return manifest
 end
 
@@ -697,6 +802,9 @@ local function list_apps()
             local files = {}
             collect_files(app_dir, "", files)
             item.file_count = #files
+            local integrity = build_integrity(item, files)
+            item.protected_file_count = #(integrity.files or {})
+            item.mutable_paths = integrity.mutable_paths
             apps[#apps + 1] = public_item(item)
         end
     end
@@ -759,7 +867,7 @@ local function publish_app(package)
             if not path then
                 return false, err
             end
-            if path == "manifest" then
+            if path == "manifest" or path == APP_INTEGRITY_FILE then
                 return false, "ReservedPath"
             end
             if path == "app.lua" then
@@ -792,6 +900,11 @@ local function publish_app(package)
         description = package.description or "Server-hosted HyperCube app.",
         file_count = written,
         entry = package.entry or "app.lua",
+        color = package.color,
+        dock = package.dock,
+        render_mode = package.render_mode,
+        refresh_rate = package.refresh_rate or package.fps or package.frame_rate,
+        mutable_paths = package.mutable_paths or package.mutable or package.unchecked_paths or package.mod_paths,
     })
     if not ok then
         return false, err
@@ -841,6 +954,9 @@ function appstore.install(hypercube)
                     source = item.source,
                     files = item.files,
                     file_count = item.file_count,
+                    protected_file_count = item.protected_file_count,
+                    mutable_paths = item.mutable_paths,
+                    integrity_encoded = item.integrity_encoded,
                 })
             else
                 reply(rednet, sender, network.protocol, "appstore.download.result", false, "AppNotFound")
