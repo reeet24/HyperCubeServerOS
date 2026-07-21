@@ -161,6 +161,34 @@ function banking_server.install(hypercube)
                 account_name
             )
             reply(rednet, sender, network.protocol, "bank.purchase.result", ok, result)
+        elseif message.type == "bank.escrow.create" then
+            ok, result = bank:escrow_create(
+                owner,
+                username,
+                message.seller or message.to or message.merchant,
+                message.amount,
+                message.escrow_id,
+                message.item_id or message.item,
+                message.memo,
+                message.app_id,
+                account_name
+            )
+            reply(rednet, sender, network.protocol, "bank.escrow.create.result", ok, result)
+        elseif message.type == "bank.escrow.status" then
+            ok, result = bank:escrow_status(owner, message.escrow_id)
+            reply(rednet, sender, network.protocol, "bank.escrow.status.result", ok, result)
+        elseif message.type == "bank.escrow.list" then
+            ok, result = bank:escrow_list(owner)
+            reply(rednet, sender, network.protocol, "bank.escrow.list.result", ok, result)
+        elseif message.type == "bank.escrow.release" then
+            ok, result = bank:escrow_release(owner, message.escrow_id, message.memo)
+            reply(rednet, sender, network.protocol, "bank.escrow.release.result", ok, result)
+        elseif message.type == "bank.escrow.refund" then
+            ok, result = bank:escrow_refund(owner, message.escrow_id, message.memo)
+            reply(rednet, sender, network.protocol, "bank.escrow.refund.result", ok, result)
+        elseif message.type == "bank.escrow.cancel" then
+            ok, result = bank:escrow_refund(owner, message.escrow_id, message.memo or "Escrow cancelled")
+            reply(rednet, sender, network.protocol, "bank.escrow.cancel.result", ok, result)
         elseif message.type == "bank.credit" then
             ok, result = false, "PhysicalDepositNotEnabled"
             reply(rednet, sender, network.protocol, "bank.credit.result", ok, result)

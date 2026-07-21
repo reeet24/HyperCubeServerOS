@@ -147,6 +147,128 @@ Common errors:
 - `PurchasePending`
 - `PurchaseFailed`
 
+## Escrow For Markets
+
+Use `api.bank.escrow` when a market needs to hold buyer funds until a buy or sell order is fulfilled.
+
+Escrow lifecycle:
+
+1. Buyer creates escrow for a seller. The buyer's spendable balance is charged immediately.
+2. Market app waits for item delivery or order fulfillment.
+3. Buyer releases escrow, which pays the seller.
+4. Buyer or seller can refund or cancel a held escrow, which returns the held funds to the buyer.
+
+Escrow IDs are idempotent. Retrying `create` with the same `escrow_id` for the same buyer/account returns the existing escrow instead of charging again.
+
+### `api.bank.escrow.create(options)`
+
+Creates a held escrow payment.
+
+```lua
+local escrow_id = api.app_id .. ":order:" .. tostring(order_id)
+local ok, result_or_err = api.bank.escrow.create({
+    seller = "seller_username",
+    amount = 32,
+    escrow_id = escrow_id,
+    item_id = "diamond_pickaxe",
+    memo = "Market order " .. tostring(order_id),
+    account_name = "main",
+})
+```
+
+Create options:
+
+- `seller`: Required seller recipient, by username or account owner ID.
+- `amount`: Required TC amount, rounded to 1/64 TC.
+- `escrow_id`: Required idempotency key.
+- `item_id`: Required item/order identifier.
+- `memo`: Optional history memo.
+- `account_name`: Optional buyer source account, default `main`.
+- `app_id`: Optional app identifier. Defaults to the calling app id.
+
+Common errors:
+
+- `EscrowIdRequired`
+- `EscrowIdInUse`
+- `ItemIdRequired`
+- `AccountRequired`
+- `RecipientNotFound`
+- `InvalidAmount`
+- `InsufficientFunds`
+- `CannotEscrowToSelf`
+
+### `api.bank.escrow.status(escrow_id)`
+
+Returns a single escrow visible to the signed-in buyer or seller.
+
+```lua
+local ok, escrow = api.bank.escrow.status(escrow_id)
+```
+
+### `api.bank.escrow.list()`
+
+Returns escrows where the signed-in user is the buyer or seller.
+
+```lua
+local ok, result = api.bank.escrow.list()
+if ok then
+    for _, escrow in ipairs(result.escrows) do
+        print(escrow.escrow_id .. " " .. escrow.status)
+    end
+end
+```
+
+### `api.bank.escrow.release(escrow_id, memo)`
+
+Releases a held escrow to the seller. Only the buyer can release.
+
+```lua
+local ok, result_or_err = api.bank.escrow.release(escrow_id, "Order delivered")
+```
+
+Common errors:
+
+- `EscrowNotFound`
+- `EscrowReleaseRequiresBuyer`
+- `EscrowAlreadyRefunded`
+- `EscrowNotHeld`
+- `SellerAccountRequired`
+
+### `api.bank.escrow.refund(escrow_id, memo)`
+
+Refunds a held escrow to the buyer. The buyer or seller can refund.
+
+```lua
+local ok, result_or_err = api.bank.escrow.refund(escrow_id, "Order cancelled")
+```
+
+Common errors:
+
+- `EscrowNotFound`
+- `EscrowAccessDenied`
+- `EscrowAlreadyReleased`
+- `EscrowNotHeld`
+- `BuyerAccountRequired`
+
+### `api.bank.escrow.cancel(escrow_id, memo)`
+
+Alias for `refund`, intended for unfilled market orders.
+
+Escrow records include:
+
+```lua
+{
+    escrow_id = "market:order:123",
+    status = "held", -- held, released, refunded
+    buyer = "buyer_account_owner",
+    seller = "seller_account_owner",
+    amount = 32,
+    currency = "TC",
+    item_id = "diamond_pickaxe",
+    app_id = "market",
+}
+```
+
 ## Raw HyperNet Messages
 
 The phone app API wraps these network messages:
@@ -156,6 +278,12 @@ The phone app API wraps these network messages:
 - `bank.history` -> `bank.history.result`
 - `bank.transfer` -> `bank.transfer.result`
 - `bank.purchase` -> `bank.purchase.result`
+- `bank.escrow.create` -> `bank.escrow.create.result`
+- `bank.escrow.status` -> `bank.escrow.status.result`
+- `bank.escrow.list` -> `bank.escrow.list.result`
+- `bank.escrow.release` -> `bank.escrow.release.result`
+- `bank.escrow.refund` -> `bank.escrow.refund.result`
+- `bank.escrow.cancel` -> `bank.escrow.cancel.result`
 
 Raw requests are useful for trusted infrastructure and diagnostics, but normal phone apps should prefer `HCAPI.bank`.
 

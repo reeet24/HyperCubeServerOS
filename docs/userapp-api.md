@@ -87,7 +87,7 @@ Rules:
 - `app.lua` is always protected.
 - `.hcapp_integrity` is reserved and cannot be packaged.
 - A path entry protects/excludes that exact file or a whole folder prefix.
-- Keep payment code, merchant usernames, entitlement checks, and `api.bank.purchase` calls outside mutable paths.
+- Keep payment code, merchant usernames, entitlement checks, `api.bank.purchase` calls, and `api.bank.escrow` order logic outside mutable paths.
 - Put mod files, config, saves, texture packs, and user scripts under mutable folders such as `mods/`, `config/`, or `saves/`.
 
 ## Context
@@ -151,7 +151,7 @@ Network requests made through `api.hypernet` automatically attach `tesserac_id`,
 
 ## Banking
 
-Apps can use `api.bank` for account status, transfers, and idempotent in-app purchases.
+Apps can use `api.bank` for account status, transfers, idempotent in-app purchases, and escrow-backed market orders.
 
 ```lua
 local ok, result = api.bank.purchase({
@@ -163,7 +163,7 @@ local ok, result = api.bank.purchase({
 })
 ```
 
-Use `api.bank.purchase` instead of raw transfers for purchases because `purchase_id` prevents duplicate charges on retry. See `docs/banking-api.md` for the full banking contract.
+Use `api.bank.purchase` instead of raw transfers for purchases because `purchase_id` prevents duplicate charges on retry. For markets, use `api.bank.escrow.create`, `release`, `refund`, and `cancel` to hold buyer funds until an order is fulfilled. See `docs/banking-api.md` for the full banking contract.
 
 ## Colors
 

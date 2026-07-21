@@ -48,6 +48,10 @@ local function history_key(owner)
     return "bank:history:" .. tostring(owner)
 end
 
+local function escrow_index_key(owner)
+    return "bank:escrows:" .. tostring(owner)
+end
+
 local function deposit_key(source_device_id, deposit_id)
     return "bank:deposit:" .. tostring(source_device_id) .. ":" .. tostring(deposit_id)
 end
@@ -62,6 +66,14 @@ end
 
 local function purchase_key(owner, account_name, purchase_id)
     return "bank:purchase:" .. tostring(owner) .. ":" .. tostring(account_name or "main") .. ":" .. tostring(purchase_id)
+end
+
+local function escrow_key(escrow_id)
+    return "bank:escrow:" .. tostring(escrow_id)
+end
+
+local function escrow_owner_key(owner, escrow_id)
+    return "bank:escrow:owner:" .. tostring(owner) .. ":" .. tostring(escrow_id)
 end
 
 local function normalize_username(username)
@@ -158,6 +170,31 @@ local function normalize_purchase_id(purchase_id)
     return purchase_id
 end
 
+local function normalize_escrow_id(escrow_id)
+    escrow_id = tostring(escrow_id or ""):gsub("%s+", "")
+    escrow_id = escrow_id:gsub("[^%w_%-%.:]", "")
+    if escrow_id == "" or #escrow_id > 80 then
+        return nil, "EscrowIdRequired"
+    end
+    return escrow_id
+end
+
+local function normalize_item_id(item_id)
+    item_id = tostring(item_id or "item"):gsub("%s+", "_"):gsub("[^%w_%-%.:]", "")
+    if item_id == "" or #item_id > 64 then
+        return nil, "ItemIdRequired"
+    end
+    return item_id
+end
+
+local function normalize_app_id(app_id)
+    app_id = tostring(app_id or "app"):gsub("%s+", "_"):gsub("[^%w_%-%.:]", "")
+    if app_id == "" or #app_id > 64 then
+        app_id = "app"
+    end
+    return app_id
+end
+
 local function amount_to_units(amount)
     return math.floor((tonumber(amount) or 0) * AMOUNT_UNIT + 0.5)
 end
@@ -185,6 +222,34 @@ local function public_account(record)
         currency = record.currency or "TC",
         created_at = record.created_at,
         updated_at = record.updated_at,
+    }
+end
+
+local function public_escrow(record)
+    if not record then
+        return nil
+    end
+    return {
+        escrow_id = record.escrow_id,
+        transaction_id = record.transaction_id,
+        status = record.status,
+        buyer = record.buyer,
+        buyer_tesserac_id = record.buyer_tesserac_id,
+        buyer_username = record.buyer_username,
+        buyer_account_name = record.buyer_account_name or "main",
+        seller = record.seller,
+        seller_tesserac_id = record.seller_tesserac_id,
+        seller_username = record.seller_username,
+        seller_account_name = record.seller_account_name or "main",
+        amount = record.amount,
+        currency = record.currency or "TC",
+        item_id = record.item_id,
+        app_id = record.app_id,
+        memo = record.memo,
+        created_at = record.created_at,
+        updated_at = record.updated_at,
+        released_at = record.released_at,
+        refunded_at = record.refunded_at,
     }
 end
 
@@ -317,6 +382,33 @@ local function append_history(database, owner, entry)
     end
     record.updated_at = now()
     database:set(history_key(owner), record)
+end
+
+local function add_to_escrow_index(database, owner, escrow_id, role)
+    local record = database:get(escrow_index_key(owner)) or {
+        owner = owner,
+        escrows = {},
+    }
+    record.escrows = record.escrows or {}
+    local found = false
+    for _, entry in ipairs(record.escrows) do
+        if entry.escrow_id == escrow_id then
+            entry.role = role or entry.role
+            found = true
+            break
+        end
+    end
+    if not found then
+        record.escrows[#record.escrows + 1] = {
+            escrow_id = escrow_id,
+            role = role,
+        }
+    end
+    while #record.escrows > 80 do
+        table.remove(record.escrows, 1)
+    end
+    record.updated_at = now()
+    database:set(escrow_index_key(owner), record)
 end
 
 function BankService.new(options)
@@ -873,6 +965,389 @@ function BankService:purchase(owner, username, to_identifier, amount, item_id, p
         at = now(),
     })
     return true, result
+end
+
+function BankService:escrow_create(owner, username, seller_identifier, amount, escrow_id, item_id, memo, app_id, account_name)
+    local ok, err = self:require_database()
+    if not ok then
+        return false, err
+    end
+    owner, err = require_owner(owner)
+    if not owner then
+        return false, err
+    end
+    amount, err = normalize_amount(amount)
+    if not amount then
+        return false, err
+    end
+    escrow_id, err = normalize_escrow_id(escrow_id)
+    if not escrow_id then
+        return false, err
+    end
+    item_id, err = normalize_item_id(item_id)
+    if not item_id then
+        return false, err
+    end
+    app_id = normalize_app_id(app_id)
+    memo = tostring(memo or ("Escrow: " .. item_id)):sub(1, 80)
+
+    local account_name_err
+    account_name, account_name_err = normalize_account_name(account_name)
+    if not account_name then
+        return false, account_name_err
+    end
+
+    local key = escrow_key(escrow_id)
+    local existing = self.database:get(key)
+    if existing then
+        if (existing.buyer_tesserac_id == owner or existing.buyer == owner) and existing.buyer_account_name == account_name then
+            return true, {
+                escrow = public_escrow(existing),
+            }
+        end
+        return false, "EscrowIdInUse"
+    end
+
+    local buyer_owner, buyer = resolve_account(self.database, owner, username, account_name)
+    if not buyer then
+        return false, "AccountRequired"
+    end
+    if (buyer.balance or 0) < amount then
+        return false, "InsufficientFunds"
+    end
+
+    local seller_owner, seller = self:resolve_recipient(seller_identifier)
+    if not seller_owner then
+        return false, seller
+    end
+    if seller_owner == buyer_owner then
+        return false, "CannotEscrowToSelf"
+    end
+
+    local tx_id = "esc_" .. tostring(now()) .. "_" .. tostring(math.floor((os.clock() or 0) * 1000))
+    local record = {
+        escrow_id = escrow_id,
+        transaction_id = tx_id,
+        status = "held",
+        buyer = buyer_owner,
+        buyer_tesserac_id = owner,
+        buyer_username = buyer.username or username,
+        buyer_account_name = buyer.account_name or account_name,
+        seller = seller_owner,
+        seller_tesserac_id = seller.owner or seller_owner,
+        seller_username = seller.username,
+        seller_account_name = seller.account_name or "main",
+        amount = amount,
+        currency = "TC",
+        item_id = item_id,
+        app_id = app_id,
+        memo = memo,
+        created_at = now(),
+        updated_at = now(),
+    }
+
+    local reserve_ok, reserve_err = self.database:set(key, record)
+    if not reserve_ok then
+        return false, reserve_err
+    end
+
+    buyer.balance = subtract_amount(buyer.balance, amount)
+    buyer.updated_at = now()
+    local set_ok, set_err = self.database:set(account_key(buyer_owner), buyer)
+    if not set_ok then
+        record.status = "failed"
+        record.error = set_err
+        record.updated_at = now()
+        self.database:set(key, record)
+        return false, set_err
+    end
+
+    self.database:set(escrow_owner_key(buyer_owner, escrow_id), { escrow_id = escrow_id, role = "buyer" })
+    self.database:set(escrow_owner_key(seller_owner, escrow_id), { escrow_id = escrow_id, role = "seller" })
+    add_to_escrow_index(self.database, owner, escrow_id, "buyer")
+    if buyer_owner ~= owner then
+        add_to_escrow_index(self.database, buyer_owner, escrow_id, "buyer")
+    end
+    add_to_escrow_index(self.database, seller.owner or seller_owner, escrow_id, "seller")
+    if seller_owner ~= (seller.owner or seller_owner) then
+        add_to_escrow_index(self.database, seller_owner, escrow_id, "seller")
+    end
+
+    append_history(self.database, buyer_owner, {
+        id = tx_id,
+        kind = "escrow_hold",
+        direction = "out",
+        to = seller_owner,
+        amount = amount,
+        balance = buyer.balance,
+        memo = memo,
+        escrow_id = escrow_id,
+        item_id = item_id,
+        app_id = app_id,
+        at = now(),
+    })
+    append_history(self.database, seller_owner, {
+        id = tx_id,
+        kind = "escrow_pending",
+        direction = "in",
+        from = buyer_owner,
+        amount = amount,
+        balance = seller.balance,
+        memo = memo,
+        escrow_id = escrow_id,
+        item_id = item_id,
+        app_id = app_id,
+        at = now(),
+    })
+
+    return true, {
+        escrow = public_escrow(record),
+        account = public_account(buyer),
+    }
+end
+
+function BankService:escrow_status(owner, escrow_id)
+    local ok, err = self:require_database()
+    if not ok then
+        return false, err
+    end
+    owner, err = require_owner(owner)
+    if not owner then
+        return false, err
+    end
+    escrow_id, err = normalize_escrow_id(escrow_id)
+    if not escrow_id then
+        return false, err
+    end
+    local record = self.database:get(escrow_key(escrow_id))
+    if not record then
+        return false, "EscrowNotFound"
+    end
+    if record.buyer ~= owner and record.seller ~= owner
+        and record.buyer_tesserac_id ~= owner and record.seller_tesserac_id ~= owner then
+        return false, "EscrowAccessDenied"
+    end
+    return true, public_escrow(record)
+end
+
+function BankService:escrow_list(owner)
+    local ok, err = self:require_database()
+    if not ok then
+        return false, err
+    end
+    owner, err = require_owner(owner)
+    if not owner then
+        return false, err
+    end
+    local index = self.database:get(escrow_index_key(owner)) or {
+        owner = owner,
+        escrows = {},
+    }
+    local result = {
+        owner = owner,
+        escrows = {},
+    }
+    for _, entry in ipairs(index.escrows or {}) do
+        local record = self.database:get(escrow_key(entry.escrow_id))
+        if record and (record.buyer == owner or record.seller == owner
+            or record.buyer_tesserac_id == owner or record.seller_tesserac_id == owner) then
+            local public = public_escrow(record)
+            public.role = entry.role or (record.buyer == owner and "buyer" or "seller")
+            result.escrows[#result.escrows + 1] = public
+        end
+    end
+    return true, result
+end
+
+function BankService:escrow_release(owner, escrow_id, memo)
+    local ok, err = self:require_database()
+    if not ok then
+        return false, err
+    end
+    owner, err = require_owner(owner)
+    if not owner then
+        return false, err
+    end
+    escrow_id, err = normalize_escrow_id(escrow_id)
+    if not escrow_id then
+        return false, err
+    end
+    memo = tostring(memo or "Escrow released"):sub(1, 80)
+
+    local key = escrow_key(escrow_id)
+    local record = self.database:get(key)
+    if not record then
+        return false, "EscrowNotFound"
+    end
+    if record.status == "released" then
+        return true, {
+            escrow = public_escrow(record),
+            already_complete = true,
+        }
+    end
+    if record.status == "refunded" then
+        return false, "EscrowAlreadyRefunded"
+    end
+    if record.status ~= "held" then
+        return false, "EscrowNotHeld"
+    end
+    if record.buyer ~= owner and record.buyer_tesserac_id ~= owner then
+        return false, "EscrowReleaseRequiresBuyer"
+    end
+
+    local seller = self.database:get(account_key(record.seller))
+    if not seller then
+        return false, "SellerAccountRequired"
+    end
+
+    record.status = "releasing"
+    record.updated_at = now()
+    self.database:set(key, record)
+
+    seller.balance = add_amount(seller.balance, record.amount)
+    seller.updated_at = now()
+    local set_ok, set_err = self.database:set(account_key(record.seller), seller)
+    if not set_ok then
+        record.status = "held"
+        record.error = set_err
+        record.updated_at = now()
+        self.database:set(key, record)
+        return false, set_err
+    end
+
+    record.status = "released"
+    record.memo = memo
+    record.released_at = now()
+    record.updated_at = now()
+    self.database:set(key, record)
+
+    local tx_id = "escrel_" .. tostring(now()) .. "_" .. tostring(math.floor((os.clock() or 0) * 1000))
+    append_history(self.database, record.buyer, {
+        id = tx_id,
+        kind = "escrow_release",
+        direction = "out",
+        to = record.seller,
+        amount = record.amount,
+        memo = memo,
+        escrow_id = escrow_id,
+        item_id = record.item_id,
+        app_id = record.app_id,
+        at = now(),
+    })
+    append_history(self.database, record.seller, {
+        id = tx_id,
+        kind = "escrow_release",
+        direction = "in",
+        from = record.buyer,
+        amount = record.amount,
+        balance = seller.balance,
+        memo = memo,
+        escrow_id = escrow_id,
+        item_id = record.item_id,
+        app_id = record.app_id,
+        at = now(),
+    })
+
+    return true, {
+        escrow = public_escrow(record),
+        seller_account = public_account(seller),
+    }
+end
+
+function BankService:escrow_refund(owner, escrow_id, memo)
+    local ok, err = self:require_database()
+    if not ok then
+        return false, err
+    end
+    owner, err = require_owner(owner)
+    if not owner then
+        return false, err
+    end
+    escrow_id, err = normalize_escrow_id(escrow_id)
+    if not escrow_id then
+        return false, err
+    end
+    memo = tostring(memo or "Escrow refunded"):sub(1, 80)
+
+    local key = escrow_key(escrow_id)
+    local record = self.database:get(key)
+    if not record then
+        return false, "EscrowNotFound"
+    end
+    if record.status == "refunded" then
+        return true, {
+            escrow = public_escrow(record),
+            already_complete = true,
+        }
+    end
+    if record.status == "released" then
+        return false, "EscrowAlreadyReleased"
+    end
+    if record.status ~= "held" then
+        return false, "EscrowNotHeld"
+    end
+    if record.buyer ~= owner and record.seller ~= owner
+        and record.buyer_tesserac_id ~= owner and record.seller_tesserac_id ~= owner then
+        return false, "EscrowAccessDenied"
+    end
+
+    local buyer = self.database:get(account_key(record.buyer))
+    if not buyer then
+        return false, "BuyerAccountRequired"
+    end
+
+    record.status = "refunding"
+    record.updated_at = now()
+    self.database:set(key, record)
+
+    buyer.balance = add_amount(buyer.balance, record.amount)
+    buyer.updated_at = now()
+    local set_ok, set_err = self.database:set(account_key(record.buyer), buyer)
+    if not set_ok then
+        record.status = "held"
+        record.error = set_err
+        record.updated_at = now()
+        self.database:set(key, record)
+        return false, set_err
+    end
+
+    record.status = "refunded"
+    record.memo = memo
+    record.refunded_at = now()
+    record.updated_at = now()
+    self.database:set(key, record)
+
+    local tx_id = "escref_" .. tostring(now()) .. "_" .. tostring(math.floor((os.clock() or 0) * 1000))
+    append_history(self.database, record.buyer, {
+        id = tx_id,
+        kind = "escrow_refund",
+        direction = "in",
+        from = record.seller,
+        amount = record.amount,
+        balance = buyer.balance,
+        memo = memo,
+        escrow_id = escrow_id,
+        item_id = record.item_id,
+        app_id = record.app_id,
+        at = now(),
+    })
+    append_history(self.database, record.seller, {
+        id = tx_id,
+        kind = "escrow_refund",
+        direction = "out",
+        to = record.buyer,
+        amount = record.amount,
+        memo = memo,
+        escrow_id = escrow_id,
+        item_id = record.item_id,
+        app_id = record.app_id,
+        at = now(),
+    })
+
+    return true, {
+        escrow = public_escrow(record),
+        buyer_account = public_account(buyer),
+    }
 end
 
 function BankService:credit(owner, amount, memo, source)

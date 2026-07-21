@@ -571,6 +571,53 @@ local function make_bank_api(tphone, app_id)
                 account_name = options.account_name,
             }, "bank.purchase.result")
         end,
+        escrow = {
+            create = function(options)
+                options = options or {}
+                return request({
+                    type = "bank.escrow.create",
+                    seller = options.seller or options.to or options.merchant,
+                    amount = options.amount,
+                    escrow_id = options.escrow_id,
+                    item_id = options.item_id or options.item,
+                    memo = options.memo,
+                    app_id = options.app_id or app_id,
+                    account_name = options.account_name,
+                }, "bank.escrow.create.result")
+            end,
+            status = function(escrow_id)
+                return request({
+                    type = "bank.escrow.status",
+                    escrow_id = escrow_id,
+                }, "bank.escrow.status.result")
+            end,
+            list = function()
+                return request({
+                    type = "bank.escrow.list",
+                }, "bank.escrow.list.result")
+            end,
+            release = function(escrow_id, memo)
+                return request({
+                    type = "bank.escrow.release",
+                    escrow_id = escrow_id,
+                    memo = memo,
+                }, "bank.escrow.release.result")
+            end,
+            refund = function(escrow_id, memo)
+                return request({
+                    type = "bank.escrow.refund",
+                    escrow_id = escrow_id,
+                    memo = memo,
+                }, "bank.escrow.refund.result")
+            end,
+            cancel = function(escrow_id, memo)
+                return request({
+                    type = "bank.escrow.cancel",
+                    escrow_id = escrow_id,
+                    memo = memo,
+                }, "bank.escrow.cancel.result")
+            end,
+        },
     }
 end
 
