@@ -1,8 +1,6 @@
 local RednetDriver = {}
 RednetDriver.__index = RednetDriver
 
-local tesseracid = require("Kernal.services.tesseracid")
-
 local DEFAULT_PROTOCOL = "tesserac"
 local DEFAULT_SERVER_HOSTS = {
     "HyperCubeServer",
@@ -87,14 +85,6 @@ local function attach_identity(self, message)
         message.device_id = message.device_id or (self.identity.device and self.identity.device.device_id)
     end
     return message
-end
-
-local function scoped_key(sender, message, clients)
-    local tesserac_id = message.tesserac_id or (clients[sender] and clients[sender].tesserac_id)
-    if not tesserac_id then
-        return nil, "AuthRequired"
-    end
-    return "service:" .. tostring(tesserac_id) .. ":" .. tostring(message.key)
 end
 
 local function accept_server_announce(self, sender, message, source)
@@ -387,147 +377,6 @@ function RednetDriver:poll(timeout)
 
     self.last_seen = now()
     log_event(self, "debug", "received type=" .. message_type(message) .. " sender=" .. tostring(sender))
-
-    if self.mode == "server" then
-        if type(message) == "table" and message.type == "hello" then
-            log_event(self, "info", "client hello sender=" .. tostring(sender) .. " os=" .. tostring(message.os) .. " role=" .. tostring(message.role))
-            self.clients[sender] = {
-                id = sender,
-                os = message.os,
-                role = message.role,
-                label = message.label,
-                computer_id = message.computer_id,
-                tesserac_id = message.tesserac_id,
-                username = message.username,
-                session_token = message.session_token,
-                last_seen = now(),
-            }
-            rednet.send(sender, {
-                type = "welcome",
-                server = self.hostname,
-                protocol = self.protocol,
-                identity_required = true,
-                time = now(),
-            }, self.protocol)
-            log_event(self, "debug", "sent welcome sender=" .. tostring(sender))
-        elseif type(message) == "table" and message.type == "identify" then
-            log_event(self, "info", "client identify sender=" .. tostring(sender) .. " tesserac_id=" .. tostring(message.tesserac_id))
-            self.clients[sender] = self.clients[sender] or { id = sender }
-            self.clients[sender].tesserac_id = message.tesserac_id
-            self.clients[sender].username = message.username
-            self.clients[sender].session_token = message.session_token
-            self.clients[sender].label = message.label
-            self.clients[sender].computer_id = message.computer_id
-            self.clients[sender].last_seen = now()
-            rednet.send(sender, {
-                type = "identify.result",
-                ok = message.tesserac_id ~= nil,
-                tesserac_id = message.tesserac_id,
-            }, self.protocol)
-        elseif type(message) == "table" and message.type == "auth.signup" then
-            log_event(self, "info", "auth signup sender=" .. tostring(sender) .. " username=" .. tostring(message.username))
-            local ok, result = tesseracid.server_signup(self.database, message)
-            rednet.send(sender, {
-                type = "auth.signup.result",
-                ok = ok == true,
-                error = ok and nil or result,
-                tesserac_id = ok and result.tesserac_id or nil,
-                username = ok and result.username or nil,
-                display_name = ok and result.display_name or nil,
-                session_token = ok and result.session_token or nil,
-                account = ok and result.account or nil,
-            }, self.protocol)
-        elseif type(message) == "table" and message.type == "auth.signin" then
-            log_event(self, "info", "auth signin sender=" .. tostring(sender) .. " username=" .. tostring(message.username))
-            local ok, result = tesseracid.server_signin(self.database, message)
-            rednet.send(sender, {
-                type = "auth.signin.result",
-                ok = ok == true,
-                error = ok and nil or result,
-                tesserac_id = ok and result.tesserac_id or nil,
-                username = ok and result.username or nil,
-                display_name = ok and result.display_name or nil,
-                session_token = ok and result.session_token or nil,
-                account = ok and result.account or nil,
-            }, self.protocol)
-        elseif type(message) == "table" and message.type == "ping" then
-            log_event(self, "debug", "ping sender=" .. tostring(sender))
-            rednet.send(sender, {
-                type = "pong",
-                server = self.hostname,
-                time = now(),
-            }, self.protocol)
-        elseif type(message) == "table" and message.type == "db.status" then
-            log_event(self, "debug", "db.status sender=" .. tostring(sender))
-            rednet.send(sender, {
-                type = "db.status.result",
-                ok = self.database ~= nil,
-                status = self.database and self.database:summary() or nil,
-            }, self.protocol)
-        elseif type(message) == "table" and message.type == "db.get" then
-            log_event(self, "debug", "db.get sender=" .. tostring(sender) .. " key=" .. tostring(message.key))
-            local value, meta_or_err = nil, "DatabaseUnavailable"
-            if self.database then
-                local key, key_err = scoped_key(sender, message, self.clients)
-                if key then
-                    value, meta_or_err = self.database:get(key)
-                    if type(value) == "table" and value.value ~= nil then
-                        value = value.value
-                    end
-                else
-                    meta_or_err = key_err
-                end
-            end
-            rednet.send(sender, {
-                type = "db.get.result",
-                ok = value ~= nil,
-                key = message.key,
-                value = value,
-                meta = type(meta_or_err) == "table" and meta_or_err or nil,
-                error = type(meta_or_err) == "string" and meta_or_err or nil,
-            }, self.protocol)
-        elseif type(message) == "table" and message.type == "db.set" then
-            log_event(self, "debug", "db.set sender=" .. tostring(sender) .. " key=" .. tostring(message.key))
-            local ok, result = false, "DatabaseUnavailable"
-            if self.database then
-                local key, key_err = scoped_key(sender, message, self.clients)
-                if key then
-                    ok, result = self.database:set(key, {
-                        owner = message.tesserac_id or (self.clients[sender] and self.clients[sender].tesserac_id),
-                        key = message.key,
-                        value = message.value,
-                    })
-                else
-                    result = key_err
-                end
-            end
-            rednet.send(sender, {
-                type = "db.set.result",
-                ok = ok == true,
-                key = message.key,
-                result = type(result) == "table" and result or nil,
-                error = type(result) == "string" and result or nil,
-            }, self.protocol)
-        elseif type(message) == "table" and message.type == "db.delete" then
-            log_event(self, "debug", "db.delete sender=" .. tostring(sender) .. " key=" .. tostring(message.key))
-            local ok, result = false, "DatabaseUnavailable"
-            if self.database then
-                local key, key_err = scoped_key(sender, message, self.clients)
-                if key then
-                    ok, result = self.database:delete(key)
-                else
-                    result = key_err
-                end
-            end
-            rednet.send(sender, {
-                type = "db.delete.result",
-                ok = ok == true,
-                key = message.key,
-                result = type(result) == "table" and result or nil,
-                error = type(result) == "string" and result or nil,
-            }, self.protocol)
-        end
-    end
 
     return {
         sender = sender,

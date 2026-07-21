@@ -23,7 +23,6 @@ local INCLUDE_ROOTS = {
 
 local CLEAN_PATHS = {
     "Kernal",
-    "appstore",
     "installer",
     "docs",
     "init.lua",
@@ -96,6 +95,17 @@ local function encode_path(path)
         out[#out + 1] = encode_segment(segment)
     end
     return table.concat(out, "/")
+end
+
+local function checksum(text)
+    text = tostring(text or "")
+    local a = 1
+    local b = 0
+    for i = 1, #text do
+        a = (a + text:byte(i)) % 65521
+        b = (b + a) % 65521
+    end
+    return (b * 65536 + a) % 2147483647
 end
 
 local function ask(prompt, fallback)
@@ -242,10 +252,15 @@ local function choose_modem()
     end
 end
 
-local function choose_installer_drive()
+local drive_by_name
+
+local function choose_appstore_drive()
     while true do
         local drives = list_drives()
         print_drives(drives)
+        print("")
+        print("Choose one disk drive for App Store storage.")
+        print("Uploaded apps will be stored there instead of on the server disk.")
         local present = {}
         for _, drive in ipairs(drives) do
             if drive.present and drive.mount then
@@ -253,21 +268,21 @@ local function choose_installer_drive()
             end
         end
         if #present == 0 then
-            print("Insert a disk for installer storage, then press enter to rescan.")
+            print("Insert a disk for App Store storage, then press enter to rescan.")
             read()
         else
-            local value = ask("Installer disk drive", present[1].name)
-            for _, drive in ipairs(present) do
-                if tostring(value) == tostring(drive.name) or tostring(value) == tostring(drive.mount) then
-                    return drive
-                end
+            local value = ask("App Store disk drive", present[1].name)
+            local by_name = drive_by_name(present)
+            local drive = by_name[value]
+            if drive then
+                return drive
             end
-            print("Unknown installer drive: " .. tostring(value))
+            print("No valid App Store drive selected.")
         end
     end
 end
 
-local function drive_by_name(drives)
+function drive_by_name(drives)
     local out = {}
     for _, drive in ipairs(drives) do
         out[tostring(drive.name)] = drive
@@ -278,7 +293,7 @@ local function drive_by_name(drives)
     return out
 end
 
-local function choose_db_drives(installer_drive)
+local function choose_db_drives(appstore_drive)
     while true do
         local drives = list_drives()
         print_drives(drives)
@@ -292,7 +307,7 @@ local function choose_db_drives(installer_drive)
         for token in value:gmatch("[^,%s]+") do
             local drive = by_name[token]
             if drive and drive.present and drive.mount and not seen[drive.name] then
-                if not installer_drive or drive.name ~= installer_drive.name then
+                if not appstore_drive or drive.name ~= appstore_drive.name then
                     selected[#selected + 1] = drive
                     seen[drive.name] = true
                 end
@@ -301,7 +316,7 @@ local function choose_db_drives(installer_drive)
         if #selected > 0 then
             return selected
         end
-        print("No valid DB drives selected. Do not include the installer disk.")
+        print("No valid DB drives selected. Do not include the App Store disk.")
     end
 end
 
@@ -357,8 +372,18 @@ local function fetch_json(url)
 end
 
 local function fetch_tree(branch)
-    return fetch_json("https://api.github.com/repos/" .. REPO_OWNER .. "/" .. REPO_NAME
+    local decoded, err = fetch_json("https://api.github.com/repos/" .. REPO_OWNER .. "/" .. REPO_NAME
         .. "/git/trees/" .. encode_segment(branch) .. "?recursive=1")
+    if not decoded then
+        return nil, err
+    end
+    if decoded.message then
+        return nil, decoded.message
+    end
+    if type(decoded.tree) ~= "table" then
+        return nil, "GitHubTreeMissing"
+    end
+    return decoded
 end
 
 local function fetch_commit_sha(branch)
@@ -366,6 +391,9 @@ local function fetch_commit_sha(branch)
         .. "/commits/" .. encode_segment(branch))
     if not decoded then
         return nil, err
+    end
+    if decoded.message then
+        return nil, decoded.message
     end
     return decoded.sha, decoded.sha and nil or "CommitShaMissing"
 end
@@ -436,7 +464,39 @@ end
 
 local function local_path(repo_path, config)
     repo_path = normalize(repo_path)
+    local appstore_root = normalize(config.appstore and config.appstore.root or "appstore")
+    if appstore_root ~= "appstore" then
+        if repo_path == "appstore" then
+            return appstore_root
+        end
+        local appstore_prefix = "appstore/"
+        if repo_path:sub(1, #appstore_prefix) == appstore_prefix then
+            return normalize(combine(appstore_root, repo_path:sub(#appstore_prefix + 1)))
+        end
+    end
+
     local installer_root = normalize(config.installer and config.installer.root or "installer")
+    local installer_roots = {}
+    if config.installer and type(config.installer.roots) == "table" then
+        for _, entry in ipairs(config.installer.roots) do
+            local root = type(entry) == "table" and entry.root or entry
+            root = normalize(root)
+            if root ~= "" then
+                installer_roots[#installer_roots + 1] = root
+            end
+        end
+    end
+    if #installer_roots > 1 then
+        if repo_path == "installer" then
+            return installer_roots[1]
+        end
+        local prefix = "installer/"
+        if repo_path:sub(1, #prefix) == prefix then
+            local relative = repo_path:sub(#prefix + 1)
+            local index = (checksum(relative) % #installer_roots) + 1
+            return normalize(combine(installer_roots[index], relative))
+        end
+    end
     if installer_root ~= "installer" then
         if repo_path == "installer" then
             return installer_root
@@ -457,14 +517,27 @@ end
 
 local function collect_files(tree, remote_root)
     local files = {}
+    local base_kernel_sha = {}
+    for _, entry in ipairs(tree and tree.tree or {}) do
+        if entry.type == "blob" then
+            local relative = relative_path(remote_root, entry.path)
+            if relative and relative:sub(1, 7) == "Kernal/" then
+                base_kernel_sha[relative:sub(8)] = entry.sha
+            end
+        end
+    end
     for _, entry in ipairs(tree and tree.tree or {}) do
         if entry.type == "blob" then
             local relative = relative_path(remote_root, entry.path)
             if relative and include_relative(relative) then
-                files[#files + 1] = {
-                    path = relative,
-                    size = entry.size or 0,
-                }
+                local distro_kernel = relative:match("^installer/[^/]+/Kernal/(.+)$")
+                local duplicate_kernel = distro_kernel and base_kernel_sha[distro_kernel] == entry.sha
+                if not duplicate_kernel then
+                    files[#files + 1] = {
+                        path = relative,
+                        size = entry.size or 0,
+                    }
+                end
             end
         end
     end
@@ -553,9 +626,9 @@ if not http or not http.get then
 end
 
 local modem = choose_modem()
-local installer_drive = choose_installer_drive()
-local installer_root = normalize(combine(installer_drive.mount, "installer"))
-local db_drives = choose_db_drives(installer_drive)
+local appstore_drive = choose_appstore_drive()
+local appstore_root = normalize(combine(appstore_drive.mount, "appstore"))
+local db_drives = choose_db_drives(appstore_drive)
 local min_replicas = tonumber(ask("DB replica groups", 2)) or 2
 if min_replicas < 1 then
     min_replicas = 1
@@ -585,12 +658,15 @@ local config = {
         hostname = "HyperCubeServer",
     },
     installer = {
-        root = installer_root,
+        root = "installer",
+    },
+    appstore = {
+        root = appstore_root,
         drive = {
-            name = installer_drive.name,
-            mount = installer_drive.mount,
-            id = installer_drive.id,
-            label = installer_drive.label,
+            name = appstore_drive.name,
+            mount = appstore_drive.mount,
+            id = appstore_drive.id,
+            label = appstore_drive.label,
         },
     },
 }
@@ -605,10 +681,10 @@ end
 local files = collect_files(tree, remote_root)
 print("Remote root: " .. (remote_root == "" and "/" or remote_root))
 print("Files: " .. tostring(#files))
-print("Installer target: " .. installer_root)
+print("App Store root: " .. tostring(appstore_root))
 print("")
 print("This will install HyperCubeServerOS source files on this computer.")
-print("The installer folder will be written to the selected installer disk.")
+print("The appstore folder will be written to the selected App Store disk.")
 if not ask_yes("Continue install?", true) then
     print("Cancelled.")
     return
@@ -640,7 +716,7 @@ print("")
 print("Setup complete.")
 print("Wrote " .. CONFIG_PATH)
 print("Modem: " .. tostring(modem))
-print("Installer root: " .. tostring(installer_root))
+print("App Store root: " .. tostring(appstore_root))
 print("DB drives: " .. tostring(#db_records))
 print("")
 if ask_yes("Reboot now?", true) then

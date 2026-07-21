@@ -8,7 +8,6 @@ local logger = {
     min_level = "DEBUG",
     entries = {},
     max_entries = 200,
-    max_file_size = 1024,
     sinks = {},
     log_path = "/logs/kernel.log",
     file_path = "logs/kernel.log",
@@ -74,37 +73,6 @@ function logger.log(level, message, context)
     end
 
     if logger.file_enabled and fs and fs.open then
-
-        -- Check file size before writing
-        local file_size = 0
-        if fs.exists(logger.file_path) then
-            local handle = fs.open(logger.file_path, "r")
-            if handle then
-                file_size = handle.readAll():len()
-                handle.close()
-            end
-        end
-
-        -- If the file size exceeds the maximum allowed size, and a DB is available, persist the log to the DB and clear the file
-        if file_size >= logger.max_file_size then
-            if logger.persist then
-                local vfs = _G.vfs -- Assuming a global VFS is available
-                if vfs then
-                    local success, err = logger.persist(vfs, nil, logger.log_path)
-                    if success then
-                        -- Clear the log file after persisting
-                        local handle = fs.open(logger.file_path, "w")
-                        if handle then
-                            handle.write("") -- Clear the file
-                            handle.close()
-                        end
-                    else
-                        -- Handle persistence error (optional)
-                    end
-                end
-            end
-        end
-
         local handle = fs.open(logger.file_path, "a")
         if handle then
             handle.writeLine(format_entry(entry))

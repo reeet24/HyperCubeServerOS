@@ -27,7 +27,6 @@ local INCLUDE_ROOTS = {
 
 local CLEAN_PATHS = {
     "Kernal",
-    "appstore",
     "installer",
     "docs",
     "init.lua",
@@ -442,6 +441,21 @@ local function collect_package_from_tree(remote_root, branch, tree)
     local files = {}
     remote_root = normalize(remote_root)
     local prefix = remote_root == "" and "" or remote_root .. "/"
+    local base_kernel_sha = {}
+    for _, entry in ipairs(tree and tree.tree or {}) do
+        if entry.type == "blob" then
+            local remote_path = normalize(entry.path)
+            local relative
+            if prefix == "" then
+                relative = remote_path
+            elseif remote_path:sub(1, #prefix) == prefix then
+                relative = remote_path:sub(#prefix + 1)
+            end
+            if relative and relative:sub(1, 7) == "Kernal/" then
+                base_kernel_sha[relative:sub(8)] = entry.sha
+            end
+        end
+    end
     for _, entry in ipairs(tree and tree.tree or {}) do
         if entry.type == "blob" then
             local remote_path = normalize(entry.path)
@@ -452,15 +466,19 @@ local function collect_package_from_tree(remote_root, branch, tree)
                 relative = remote_path:sub(#prefix + 1)
             end
             if relative and include_relative(relative) then
-                local data, data_err = http_get(raw_url(branch, remote_path), "application/octet-stream")
-                if not data then
-                    return nil, data_err
+                local distro_kernel = relative:match("^installer/[^/]+/Kernal/(.+)$")
+                local duplicate_kernel = distro_kernel and base_kernel_sha[distro_kernel] == entry.sha
+                if not duplicate_kernel then
+                    local data, data_err = http_get(raw_url(branch, remote_path), "application/octet-stream")
+                    if not data then
+                        return nil, data_err
+                    end
+                    files[#files + 1] = {
+                        path = relative,
+                        data = data,
+                        size = #data,
+                    }
                 end
-                files[#files + 1] = {
-                    path = relative,
-                    data = data,
-                    size = #data,
-                }
             end
         end
     end

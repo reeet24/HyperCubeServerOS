@@ -1,6 +1,6 @@
 # HyperCubeServer OS
 
-HyperCubeServer is the main Tesserac server OS for ComputerCraft. It hosts the Tesserac rednet protocol, account identity, phone registration, user-scoped storage, web publishing, banking, messages, app store packages, software updates, and install media for HyperCube phones and turtles.
+HyperCubeServer is the main Tesserac server OS for ComputerCraft. It hosts the Tesserac rednet protocol, account identity, phone registration, user-scoped storage, web publishing, banking, messages, app store packages, software updates, and install media for HyperCube phones.
 
 ## Boot Flow
 
@@ -20,9 +20,8 @@ HyperCubeServer is the main Tesserac server OS for ComputerCraft. It hosts the T
 - `Kernal/`: Kernel APIs, drivers, process system, VFS, GUI, and services.
 - `Kernal/drivers/`: Device and platform adapters such as rednet, screen, diskdb, and ramdisk.
 - `Kernal/services/`: Tesserac service implementations.
-- `appstore/`: Server-hosted app catalog and installable app packages.
+- `appstore/`: Seed app catalog imported into the sharded DiskDB appstore.
 - `installer/hypercube_phone/`: Source image packaged into the TPhone ROM.
-- `installer/hypercube_turtle/`: Source image packaged for turtle installs.
 - `logs/`: Local server logs.
 - `package_server.lua`: In-game packaging helper.
 - `package_server.py`: Host-side packaging helper.
@@ -98,7 +97,7 @@ The setup script writes `server_config` and `hypercube_server_install`. On boot,
 - `chirper_server.lua`: Chirper timeline service.
 - `train_schedule_server.lua`: CMR train schedule service.
 - `appstore.lua`: App catalog and package serving.
-- `installer.lua`: Phone/turtle install media and update package builder.
+- `installer.lua`: Phone install media and update package builder.
 - `software_updates.lua`: Update status, ROM package download, and chunked ROM transfer.
 
 ## Rednet Protocol
@@ -176,7 +175,8 @@ Profiles:
 
 - `phone`: `installer/hypercube_phone`, OS `HyperCube`, device `TPhone`
 - `business_phone`: `installer/hypercube_phone`, OS `HyperCube`, device `TBusinessPhone`
-- `turtle`: `installer/hypercube_turtle`, OS `HyperCube`, device `Turtle`
+
+ROM builds inherit the server `Kernal/` first, then overlay distro-specific files from `installer/<distro>/Kernal`. Keep only phone-specific overrides in distro kernel folders, such as device rednet drivers, GUI changes, app managers, and HCAPI helpers. Default apps, distro `init.lua`, and distro `startup.lua` still live under the distro folder.
 
 Installed media includes:
 
@@ -188,7 +188,7 @@ The ROM loader decrypts `hypercube.rom`, installs it into memory as `HC_ROM`, ov
 
 ## App Store
 
-Server-hosted app packages live in `appstore/apps`.
+Server-hosted app packages are stored in DiskDB under sharded `appstore:*` records. The repo folder `appstore/apps` is seed material: on boot, missing seed apps are imported into DiskDB, then `appstore.list` and `appstore.download` serve from DiskDB.
 
 Apps may be single-file packages with only `app.lua` or multi-file bundles with local modules and assets:
 
@@ -322,7 +322,7 @@ Default phone scopes include:
 - `phone.access`
 - `web.publish`
 
-Default turtle/webserver scopes are smaller and focus on origin/web or turtle capabilities.
+Default webserver scopes are smaller and focus on origin/web capabilities.
 
 Bank branch and ATM device roles are intentionally narrow and include:
 

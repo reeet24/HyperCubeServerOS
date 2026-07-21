@@ -10,7 +10,6 @@ local init_system = require("Kernal.init_system")
 local program_runner = require("Kernal.program_runner")
 local screen_driver = require("Kernal.drivers.screen")
 local rednet_driver = require("Kernal.drivers.rednet")
-local diskdb_driver = require("Kernal.drivers.diskdb")
 local tesseracid = require("Kernal.services.tesseracid")
 local hcapi = require("Kernal.services.hcapi")
 local app_manager = require("Kernal.services.app_manager")
@@ -33,7 +32,6 @@ local TPhone = {
     program_runner = program_runner,
     screen_driver = screen_driver,
     rednet_driver = rednet_driver,
-    diskdb_driver = diskdb_driver,
     tesseracid = tesseracid,
     hcapi = hcapi,
     gui = gui,
@@ -259,25 +257,6 @@ function TPhone.boot()
         TPhone:check_for_updates()
     else
         logger.warn("rednet driver unavailable: " .. tostring(network_or_err), TPhone.root_context)
-    end
-
-    if TPhone.network_mode == "server" then
-        local db_ok, database_or_err = pcall(diskdb_driver.init, {
-            diskdb = {
-                root = "hypercube_db",
-                min_replicas = 2,
-            },
-        })
-        if db_ok and database_or_err then
-            TPhone.database = database_or_err
-            if TPhone.network then
-                TPhone.network.database = TPhone.database
-            end
-            local summary = TPhone.database:summary()
-            logger.info("diskdb " .. summary.status .. " drives=" .. tostring(summary.drives), TPhone.root_context)
-        else
-            logger.warn("diskdb unavailable: " .. tostring(database_or_err), TPhone.root_context)
-        end
     end
 
     init_system.add_task("system.event_tick", function(proc_context)

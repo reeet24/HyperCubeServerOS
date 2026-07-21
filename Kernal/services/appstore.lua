@@ -5,6 +5,8 @@ local APP_ROOT = "appstore/apps"
 local TOKEN_PATH = "appstore/admin_token"
 local APP_INTEGRITY_FILE = ".hcapp_integrity"
 local APP_INTEGRITY_KEY = "HyperCubeAppIntegrity:v1"
+local APPSTORE_DB = nil
+local APPSTORE_INDEX_KEY = "appstore:index"
 
 local SEED_APPS = {
     {
@@ -487,6 +489,22 @@ local function combine(a, b)
     return a .. "/" .. b
 end
 
+local function configure_storage(config)
+    local root = config and config.appstore and config.appstore.root or APPSTORE_ROOT
+    root = tostring(root or "appstore"):gsub("\\", "/")
+    root = root:gsub("^%./", ""):gsub("^/+", ""):gsub("//+", "/")
+    if root == "" then
+        root = "appstore"
+    end
+    APPSTORE_ROOT = root
+    APP_ROOT = combine(APPSTORE_ROOT, "apps")
+    TOKEN_PATH = combine(APPSTORE_ROOT, "admin_token")
+    appstore.root = APPSTORE_ROOT
+    appstore.app_root = APP_ROOT
+    appstore.token_path = TOKEN_PATH
+    return APPSTORE_ROOT
+end
+
 local function safe_id(id)
     id = tostring(id or ""):lower():gsub("%s+", "")
     id = id:gsub("[^%w_%-%.]", "_")
@@ -572,6 +590,66 @@ local function checksum(text)
         b = (b + a) % 65521
     end
     return tostring((b * 65536 + a) % 2147483647)
+end
+
+local function app_manifest_key(id)
+    return "appstore:app:" .. tostring(id) .. ":manifest"
+end
+
+local function app_file_key(id, path)
+    return "appstore:app:" .. tostring(id) .. ":file:" .. checksum(tostring(path or ""))
+end
+
+local function db_get(key)
+    if not APPSTORE_DB then
+        return nil, "DatabaseUnavailable"
+    end
+    return APPSTORE_DB:get(key)
+end
+
+local function db_set(key, value)
+    if not APPSTORE_DB then
+        return false, "DatabaseUnavailable"
+    end
+    return APPSTORE_DB:set(key, value)
+end
+
+local function db_delete(key)
+    if not APPSTORE_DB then
+        return false, "DatabaseUnavailable"
+    end
+    return APPSTORE_DB:delete(key)
+end
+
+local function load_index()
+    local index = db_get(APPSTORE_INDEX_KEY)
+    if type(index) ~= "table" then
+        index = {
+            format = "HyperCubeAppStoreIndex",
+            version = 1,
+            apps = {},
+        }
+    end
+    index.apps = index.apps or {}
+    return index
+end
+
+local function save_index(index)
+    index = type(index) == "table" and index or load_index()
+    index.updated_at = now()
+    return db_set(APPSTORE_INDEX_KEY, index)
+end
+
+local function index_app(id)
+    local index = load_index()
+    for _, existing in ipairs(index.apps) do
+        if existing == id then
+            return save_index(index)
+        end
+    end
+    index.apps[#index.apps + 1] = id
+    table.sort(index.apps)
+    return save_index(index)
 end
 
 local function xor_crypt(data, key)
@@ -737,7 +815,7 @@ local function collect_files(root, path, files)
     end
 end
 
-local function read_app(id)
+local function read_app_from_fs(id)
     local safe, id_err = safe_id(id)
     if not safe then
         return nil, id_err
@@ -763,23 +841,185 @@ local function read_app(id)
     return manifest
 end
 
-local function ensure_seed_apps()
-    local ok, err = ensure_dir(APP_ROOT)
+local function manifest_for_db(item, files)
+    local manifest = {
+        format = "HyperCubeAppStoreApp",
+        version = 1,
+        id = item.id,
+        title = item.title or item.id,
+        label = item.label,
+        app_version = item.version or "1.0.0",
+        author = item.author or item.username or "Server",
+        description = item.description or "Server-hosted HyperCube app.",
+        entry = item.entry or "app.lua",
+        color = item.color,
+        dock = item.dock,
+        render_mode = item.render_mode,
+        refresh_rate = item.refresh_rate or item.fps or item.frame_rate,
+        mutable_paths = normalize_mutable_paths(item.mutable_paths or item.mutable or item.unchecked_paths or item.mod_paths),
+        files = {},
+        file_count = #files,
+        updated_at = now(),
+    }
+    for _, file in ipairs(files or {}) do
+        manifest.files[#manifest.files + 1] = {
+            path = file.path,
+            checksum = checksum(file.data or ""),
+            size = #(file.data or ""),
+        }
+    end
+    table.sort(manifest.files, function(a, b)
+        return tostring(a.path) < tostring(b.path)
+    end)
+    return manifest
+end
+
+local function db_manifest_to_item(manifest)
+    if type(manifest) ~= "table" then
+        return nil
+    end
+    return {
+        id = manifest.id,
+        title = manifest.title,
+        label = manifest.label,
+        version = manifest.app_version or manifest.version,
+        author = manifest.author,
+        description = manifest.description,
+        entry = manifest.entry,
+        color = manifest.color,
+        dock = manifest.dock,
+        render_mode = manifest.render_mode,
+        refresh_rate = manifest.refresh_rate,
+        mutable_paths = manifest.mutable_paths or {},
+        file_count = manifest.file_count or #(manifest.files or {}),
+        updated_at = manifest.updated_at,
+    }
+end
+
+local function save_app_to_db(item, files)
+    if not APPSTORE_DB then
+        return false, "DatabaseUnavailable"
+    end
+    local id, id_err = safe_id(item and item.id)
+    if not id then
+        return false, id_err
+    end
+    item.id = id
+    table.sort(files, function(a, b)
+        return tostring(a.path) < tostring(b.path)
+    end)
+
+    local existing = db_get(app_manifest_key(id))
+    if type(existing) == "table" then
+        for _, file in ipairs(existing.files or {}) do
+            if file.path then
+                db_delete(app_file_key(id, file.path))
+            end
+        end
+    end
+
+    local manifest = manifest_for_db(item, files)
+    for _, file in ipairs(files or {}) do
+        local ok, err = db_set(app_file_key(id, file.path), {
+            app_id = id,
+            path = file.path,
+            data = file.data or "",
+            checksum = checksum(file.data or ""),
+            size = #(file.data or ""),
+            updated_at = manifest.updated_at,
+        })
+        if not ok then
+            return false, err
+        end
+    end
+
+    local ok, err = db_set(app_manifest_key(id), manifest)
     if not ok then
         return false, err
+    end
+    ok, err = index_app(id)
+    if not ok then
+        return false, err
+    end
+    return true, public_item(db_manifest_to_item(manifest))
+end
+
+local function read_app(id)
+    local safe, id_err = safe_id(id)
+    if not safe then
+        return nil, id_err
+    end
+    local manifest = db_get(app_manifest_key(safe))
+    if type(manifest) ~= "table" then
+        return nil, "AppNotFound"
+    end
+    local item = db_manifest_to_item(manifest)
+    local files = {}
+    for _, file_ref in ipairs(manifest.files or {}) do
+        local record = db_get(app_file_key(safe, file_ref.path))
+        if type(record) ~= "table" or record.path ~= file_ref.path then
+            return nil, "AppFileMissing:" .. tostring(file_ref.path)
+        end
+        if checksum(record.data or "") ~= tostring(file_ref.checksum or "") then
+            return nil, "AppFileChecksumMismatch:" .. tostring(file_ref.path)
+        end
+        files[#files + 1] = {
+            path = file_ref.path,
+            data = record.data or "",
+        }
+    end
+    table.sort(files, function(a, b)
+        return tostring(a.path) < tostring(b.path)
+    end)
+    item.files = files
+    item.file_count = #files
+    for _, file in ipairs(files) do
+        if file.path == "app.lua" then
+            item.source = file.data
+            break
+        end
+    end
+    if not item.source then
+        return nil, "EntrypointRequired"
+    end
+    item.integrity = build_integrity(item, files)
+    item.integrity_encoded = encode_integrity(item.integrity)
+    item.protected_file_count = #(item.integrity.files or {})
+    item.mutable_paths = item.integrity.mutable_paths
+    return item
+end
+
+local function ensure_seed_apps()
+    if not APPSTORE_DB then
+        return false, "DatabaseUnavailable"
     end
 
     for _, item in ipairs(SEED_APPS) do
         local id = safe_id(item.id)
-        if id then
-            local app_dir = combine(APP_ROOT, id)
-            local app_path = combine(app_dir, "app.lua")
-            ensure_dir(app_dir)
-            if not fs.exists(app_path) then
-                write_all(app_path, item.source)
-                save_manifest(app_dir, item)
-            elseif not fs.exists(manifest_path(app_dir)) then
-                save_manifest(app_dir, item)
+        if id and not db_get(app_manifest_key(id)) then
+            local ok, err = save_app_to_db(item, {
+                {
+                    path = "app.lua",
+                    data = item.source,
+                },
+            })
+            if not ok then
+                return false, err
+            end
+        end
+    end
+
+    if fs and fs.exists and fs.list and fs.exists(APP_ROOT) then
+        for _, id in ipairs(fs.list(APP_ROOT)) do
+            local safe = safe_id(id)
+            if safe and not db_get(app_manifest_key(safe)) then
+                local item = read_app_from_fs(safe)
+                if item then
+                    local ok, err = save_app_to_db(item, item.files or {})
+                    if not ok then
+                        return false, err
+                    end
+                end
             end
         end
     end
@@ -790,21 +1030,16 @@ end
 local function list_apps()
     ensure_seed_apps()
     local apps = {}
-    if not fs or not fs.exists or not fs.list or not fs.exists(APP_ROOT) then
+    if not APPSTORE_DB then
         return apps
     end
 
-    for _, id in ipairs(fs.list(APP_ROOT)) do
-        local safe = safe_id(id)
-        local app_dir = safe and combine(APP_ROOT, safe) or nil
-        if app_dir and fs.exists(combine(app_dir, "app.lua")) then
-            local item = load_manifest(safe, app_dir)
-            local files = {}
-            collect_files(app_dir, "", files)
-            item.file_count = #files
-            local integrity = build_integrity(item, files)
-            item.protected_file_count = #(integrity.files or {})
-            item.mutable_paths = integrity.mutable_paths
+    local index = load_index()
+    for _, id in ipairs(index.apps or {}) do
+        local manifest = db_get(app_manifest_key(id))
+        if type(manifest) == "table" then
+            local item = db_manifest_to_item(manifest)
+            item.protected_file_count = #(build_integrity(item, manifest.files or {}).files or {})
             apps[#apps + 1] = public_item(item)
         end
     end
@@ -842,16 +1077,7 @@ local function publish_app(package)
         return false, "SourceRequired"
     end
 
-    local app_dir = combine(APP_ROOT, id)
-    if fs.exists(app_dir) then
-        fs.delete(app_dir)
-    end
-    local ok, err = ensure_dir(app_dir)
-    if not ok then
-        return false, err
-    end
-
-    local written = 0
+    local files = {}
     local has_app_lua = false
     if type(package_files) == "table" then
         for key, file in pairs(package_files) do
@@ -873,44 +1099,38 @@ local function publish_app(package)
             if path == "app.lua" then
                 has_app_lua = true
             end
-            ok, err = write_all(combine(app_dir, path), tostring(data or ""))
-            if not ok then
-                return false, err
-            end
-            written = written + 1
+            files[#files + 1] = {
+                path = path,
+                data = tostring(data or ""),
+            }
         end
     end
 
     if type(source) == "string" and source ~= "" and not has_app_lua then
-        ok, err = write_all(combine(app_dir, "app.lua"), source)
-        if not ok then
-            return false, err
-        end
-        written = written + 1
-    elseif not fs.exists(combine(app_dir, "app.lua")) then
+        files[#files + 1] = {
+            path = "app.lua",
+            data = source,
+        }
+        has_app_lua = true
+    end
+    if not has_app_lua then
         return false, "EntrypointRequired"
     end
 
-    ok, err = save_manifest(app_dir, {
+    return save_app_to_db({
         id = id,
         title = package.title or id,
         label = package.label,
         version = package.version or "1.0.0",
         author = package.author or package.username or "Server",
         description = package.description or "Server-hosted HyperCube app.",
-        file_count = written,
         entry = package.entry or "app.lua",
         color = package.color,
         dock = package.dock,
         render_mode = package.render_mode,
         refresh_rate = package.refresh_rate or package.fps or package.frame_rate,
         mutable_paths = package.mutable_paths or package.mutable or package.unchecked_paths or package.mod_paths,
-    })
-    if not ok then
-        return false, err
-    end
-
-    return true, public_item(load_manifest(id, app_dir))
+    }, files)
 end
 
 local function reply(rednet_api, sender, protocol, response_type, ok, result)
@@ -927,8 +1147,16 @@ function appstore.install(hypercube)
     if not hypercube.network then
         return false, "NetworkUnavailable"
     end
+    if not hypercube.database then
+        return false, "DatabaseUnavailable"
+    end
+    APPSTORE_DB = hypercube.database
+    configure_storage(hypercube and hypercube.config)
     ensure_dir(APPSTORE_ROOT)
-    ensure_seed_apps()
+    local seed_ok, seed_err = ensure_seed_apps()
+    if not seed_ok then
+        return false, seed_err
+    end
     if hypercube.appstore_handler_registered then
         return true
     end
@@ -997,6 +1225,8 @@ end
 
 appstore.root = APPSTORE_ROOT
 appstore.app_root = APP_ROOT
+appstore.token_path = TOKEN_PATH
+appstore.configure_storage = configure_storage
 appstore.list_apps = list_apps
 appstore.read_app = read_app
 appstore.publish = publish_app

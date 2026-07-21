@@ -301,10 +301,10 @@ function Screen:pull_event(timeout)
     end
 
     local function pull_raw()
-        if os.pullEvent then
-            return { os.pullEvent() }
-        elseif os.pullEventRaw then
+        if os.pullEventRaw then
             return { os.pullEventRaw() }
+        elseif os.pullEvent then
+            return { os.pullEvent() }
         end
         return nil
     end
@@ -360,7 +360,7 @@ function Screen:pull_event(timeout)
                 height = self.height,
                 raw = event,
             }
-        else
+        elseif event[1] ~= "terminate" then
             cancel_timer()
             return {
                 type = event[1],

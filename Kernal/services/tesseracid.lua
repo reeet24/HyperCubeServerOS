@@ -85,12 +85,6 @@ local DEFAULT_SCOPES = {
         "phone.access",
         "web.publish",
     },
-    turtle = {
-        "account.identity",
-        "db.user",
-        "turtle.control",
-        "web.origin",
-    },
     webserver = {
         "account.identity",
         "db.user",
@@ -275,6 +269,18 @@ local function request(network, message, expected)
     return network:request(message, expected, 5)
 end
 
+local function install_device()
+    local raw = read_file("hypercube_install")
+    if not raw then
+        return "TPhone"
+    end
+    local ok, info = pcall(unserialize, raw)
+    if ok and type(info) == "table" and info.device then
+        return tostring(info.device)
+    end
+    return "TPhone"
+end
+
 function tesseracid.ensure_phone_identity(network, logger)
     local existing = tesseracid.load_local()
     if existing then
@@ -308,14 +314,18 @@ function tesseracid.ensure_phone_identity(network, logger)
     local password = prompt("Password: ", true)
     local password_hash = tesseracid.password_hash(normalized, password, normalized)
     local message_type = choice == "2" and "auth.signup" or "auth.signin"
+    local device_type = install_device()
+    local business_install = device_type == "TBusinessPhone"
 
     local reply, request_err = request(network, {
         type = message_type,
         username = normalized,
         password_hash = password_hash,
+        account_type = business_install and "business" or nil,
         device = {
             os = "HyperCube",
-            role = "phone",
+            role = business_install and "business_phone" or "phone",
+            device = device_type,
             label = os.getComputerLabel and os.getComputerLabel() or nil,
             computer_id = os.getComputerID and os.getComputerID() or nil,
         },

@@ -229,16 +229,8 @@ local function draw_installer(screen, hypercube, state, width, y, height)
             bg = source_profile.device == "TPhone" and C.yellow or C.gray,
         },
         {
-            id = "installer_turtle",
-            x = 16,
-            width = 10,
-            label = "Turtle",
-            fg = source_profile.device == "Turtle" and C.black or C.white,
-            bg = source_profile.device == "Turtle" and C.yellow or C.gray,
-        },
-        {
             id = "installer_business_phone",
-            x = 28,
+            x = 16,
             width = 12,
             label = "Business",
             fg = source_profile.device == "TBusinessPhone" and C.black or C.white,
@@ -576,6 +568,147 @@ local function draw_updates(screen, hypercube, state, width, y, height)
     return buttons
 end
 
+local CONFIG_FIELDS = {
+    { key = "network.hostname", label = "Hostname", kind = "string" },
+    { key = "network.protocol", label = "Protocol", kind = "string" },
+    { key = "network.modem", label = "Modem", kind = "string" },
+    { key = "db.root", label = "DB root", kind = "string" },
+    { key = "db.min_replicas", label = "DB replicas", kind = "number" },
+    { key = "installer.root", label = "Installer root", kind = "string" },
+    { key = "appstore.root", label = "App Store root", kind = "string" },
+}
+
+local function config_state(state)
+    state.config = state.config or {
+        message = nil,
+    }
+    return state.config
+end
+
+local function get_path_value(root, path)
+    local current = root
+    for part in tostring(path or ""):gmatch("[^%.]+") do
+        if type(current) ~= "table" then
+            return nil
+        end
+        current = current[part]
+    end
+    return current
+end
+
+local function set_path_value(root, path, value)
+    local current = root
+    local parts = {}
+    for part in tostring(path or ""):gmatch("[^%.]+") do
+        parts[#parts + 1] = part
+    end
+    for i = 1, #parts - 1 do
+        local part = parts[i]
+        if type(current[part]) ~= "table" then
+            current[part] = {}
+        end
+        current = current[part]
+    end
+    if #parts > 0 then
+        current[parts[#parts]] = value
+    end
+end
+
+local function prompt_terminal(label, fallback)
+    if not term or not read then
+        return nil, "TerminalUnavailable"
+    end
+    local previous = term.current and term.current() or nil
+    local native = term.native and term.native() or previous
+    if term.redirect and native and previous ~= native then
+        term.redirect(native)
+    end
+    if term.clear and term.setCursorPos then
+        term.clear()
+        term.setCursorPos(1, 1)
+    end
+    print("Edit server_config")
+    print("")
+    write(tostring(label) .. " [" .. tostring(fallback or "") .. "]: ")
+    local value = read()
+    if term.redirect and previous and previous ~= native then
+        term.redirect(previous)
+    end
+    value = tostring(value or ""):match("^%s*(.-)%s*$")
+    if value == "" then
+        return fallback
+    end
+    return value
+end
+
+local function draw_config(screen, hypercube, state, width, y, height)
+    screen:border(2, y, width - 2, height, C.lightGray, C.black)
+    screen:write(4, y, " Server Config ", C.yellow, C.black)
+
+    local buttons = {}
+    local cfg_state = config_state(state)
+    local config = hypercube.config or {}
+    local rows = {}
+    for i, field in ipairs(CONFIG_FIELDS) do
+        rows[#rows + 1] = {
+            type = "field",
+            index = i,
+            field = field,
+            value = get_path_value(config, field.key),
+        }
+    end
+    rows[#rows + 1] = { type = "spacer" }
+    rows[#rows + 1] = { type = "actions" }
+    if cfg_state.message then
+        rows[#rows + 1] = { type = "text", text = cfg_state.message, fg = C.orange }
+    end
+    rows[#rows + 1] = { type = "text", text = "Some changes require reboot to affect running services.", fg = C.lightGray }
+
+    local visible = math.max(1, height - 2)
+    local max_scroll = math.max(0, #rows - visible)
+    local scroll = clamp(get_scroll(state, "config"), 0, max_scroll)
+    set_scroll(state, "config", scroll, max_scroll)
+    state.max_scroll.config = max_scroll
+
+    local row_y = y + 1
+    for i = scroll + 1, math.min(#rows, scroll + visible) do
+        local row = rows[i]
+        if row.type == "field" then
+            local label_width = math.min(16, math.max(8, math.floor(width / 3)))
+            local value_x = 5 + label_width
+            local value_width = math.max(8, width - value_x - 4)
+            screen:write(4, row_y, truncate(row.field.label .. ":", label_width), C.lightGray, C.black)
+            buttons["config_edit_" .. tostring(row.index)] = screen:button(
+                "config_edit_" .. tostring(row.index),
+                value_x,
+                row_y,
+                value_width,
+                truncate(tostring(row.value == nil and "" or row.value), value_width),
+                { fg = C.white, bg = C.gray }
+            )
+        elseif row.type == "actions" then
+            buttons.config_save = screen:button("config_save", 4, row_y, 8, "Save", {
+                fg = C.black,
+                bg = C.yellow,
+            })
+            buttons.config_reload = screen:button("config_reload", 14, row_y, 10, "Reload", {
+                fg = C.white,
+                bg = C.blue,
+            })
+        elseif row.type == "spacer" then
+            -- Blank row.
+        else
+            screen:write(4, row_y, truncate(row.text or "", width - 6), row.fg or C.white, C.black)
+        end
+        row_y = row_y + 1
+        if row_y >= y + height then
+            break
+        end
+    end
+    draw_scroll_hint(screen, width, y, height, scroll, max_scroll)
+    return buttons
+end
+
 local function create_screen_manager(default_screen)
     local manager = {
         active = default_screen,
@@ -658,10 +791,6 @@ local function ensure_screen_manager(state, hypercube)
             elseif id == "installer_phone" and hypercube.installer and hypercube.installer.set_source then
                 hypercube.installer:set_source("phone")
                 hypercube.logger.info("installer source set phone", hypercube.root_context)
-                return true
-            elseif id == "installer_turtle" and hypercube.installer and hypercube.installer.set_source then
-                hypercube.installer:set_source("turtle")
-                hypercube.logger.info("installer source set turtle", hypercube.root_context)
                 return true
             elseif id == "installer_business_phone" and hypercube.installer and hypercube.installer.set_source then
                 hypercube.installer:set_source("business_phone")
@@ -761,6 +890,67 @@ local function ensure_screen_manager(state, hypercube)
             return false
         end,
     })
+    screens:define("config", {
+        render = function(ctx)
+            ctx.state.panel_buttons = draw_config(ctx.screen, hypercube, ctx.state, ctx.width, ctx.y, ctx.height)
+        end,
+        on_touch = function(ctx)
+            local id = tostring(ctx.button_id or "")
+            local cfg_state = config_state(ctx.state)
+            local index = tonumber(id:match("^config_edit_(%d+)$"))
+            if index and CONFIG_FIELDS[index] then
+                local field = CONFIG_FIELDS[index]
+                local current = get_path_value(hypercube.config or {}, field.key)
+                local value, err = prompt_terminal(field.label, current)
+                if value == nil then
+                    cfg_state.message = "Edit failed: " .. tostring(err)
+                    return true
+                end
+                if field.kind == "number" then
+                    value = tonumber(value)
+                    if not value then
+                        cfg_state.message = "Invalid number for " .. field.label
+                        return true
+                    end
+                end
+                hypercube.config = hypercube.config or {}
+                set_path_value(hypercube.config, field.key, value)
+                cfg_state.message = "Updated " .. field.label .. ". Press Save."
+                return true
+            elseif id == "config_save" then
+                if not hypercube.server_config or not hypercube.server_config.save then
+                    cfg_state.message = "Save failed: ConfigServiceUnavailable"
+                    return true
+                end
+                local ok, result = hypercube.server_config.save(hypercube.config)
+                if ok then
+                    hypercube.config = result
+                    if hypercube.appstore and hypercube.appstore.configure_storage then
+                        hypercube.appstore.configure_storage(hypercube.config)
+                    end
+                    cfg_state.message = "Saved server_config."
+                    if hypercube.logger then
+                        hypercube.logger.warn("server_config saved from GUI", hypercube.root_context)
+                    end
+                else
+                    cfg_state.message = "Save failed: " .. tostring(result)
+                end
+                return true
+            elseif id == "config_reload" then
+                if hypercube.server_config and hypercube.server_config.load then
+                    hypercube.config = hypercube.server_config.load()
+                    if hypercube.appstore and hypercube.appstore.configure_storage then
+                        hypercube.appstore.configure_storage(hypercube.config)
+                    end
+                    cfg_state.message = "Reloaded server_config."
+                else
+                    cfg_state.message = "Reload failed: ConfigServiceUnavailable"
+                end
+                return true
+            end
+            return false
+        end,
+    })
     state.screens = screens
     return screens
 end
@@ -797,6 +987,12 @@ local function draw_footer(screen, width, height, active_view)
                 bg = active_view == "updates" and C.yellow or C.gray,
             })
         end
+        if width >= 33 then
+            buttons.config = screen:button("config", 25, y, 3, "C", {
+                fg = active_view == "config" and C.black or C.white,
+                bg = active_view == "config" and C.yellow or C.gray,
+            })
+        end
         buttons.shutdown = screen:button("shutdown", math.max(1, width - 2), y, 3, "X", {
             fg = C.white,
             bg = C.red,
@@ -828,6 +1024,12 @@ local function draw_footer(screen, width, height, active_view)
         fg = active_view == "updates" and C.black or C.white,
         bg = active_view == "updates" and C.yellow or C.gray,
     })
+    if width >= 75 then
+        buttons.config = screen:button("config", 60, y, 7, "Config", {
+            fg = active_view == "config" and C.black or C.white,
+            bg = active_view == "config" and C.yellow or C.gray,
+        })
+    end
     buttons.shutdown = screen:button("shutdown", width - 7, y, 8, "Shutdown", {
         fg = C.white,
         bg = C.red,
@@ -945,6 +1147,9 @@ function gui.run(hypercube)
             elseif id == "updates" then
                 screens:set("updates")
                 state.view = "updates"
+            elseif id == "config" then
+                screens:set("config")
+                state.view = "config"
             elseif id and screens:touch({
                 button_id = id,
                 state = state,
@@ -983,6 +1188,10 @@ function gui.run(hypercube)
             elseif key == keys.u then
                 screens:set("updates")
                 state.view = "updates"
+                state.needs_render = true
+            elseif key == keys.c then
+                screens:set("config")
+                state.view = "config"
                 state.needs_render = true
             elseif key == keys.up then
                 scroll_state(state, state.view or "logs", -1, state.max_scroll[state.view or "logs"] or 0)

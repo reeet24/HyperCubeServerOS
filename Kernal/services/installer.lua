@@ -1,4 +1,5 @@
 local installer = {}
+local config_ok, server_config = pcall(require, "Kernal.services.server_config")
 
 local DEFAULT_SOURCE = "installer/hypercube_phone"
 local SOURCE_PROFILES = {
@@ -12,18 +13,15 @@ local SOURCE_PROFILES = {
         os = "HyperCube",
         device = "TBusinessPhone",
     },
-    turtle = {
-        source = "installer/hypercube_turtle",
-        os = "HyperCube",
-        device = "Turtle",
-    },
 }
 local INSTALL_PATHS = {
-    "Kernal",
     "apps",
     "init.lua",
     "startup.lua",
     "checklist.md",
+}
+local BASE_ROM_PATHS = {
+    "Kernal",
 }
 local ROM_FILE = "hypercube.rom"
 local ROM_KEY = "Tesserac:HyperCube:BankOfBash:ROM:v1"
@@ -108,6 +106,12 @@ local function copy_tree(source, target)
 end
 
 local function read_all(path)
+    if config_ok and server_config and server_config.local_path then
+        local ok, config = pcall(server_config.load)
+        if ok and type(config) == "table" then
+            path = server_config.local_path(config, path)
+        end
+    end
     local handle = fs.open(path, "rb")
     if not handle then
         return nil, "OpenFailed"
@@ -115,6 +119,28 @@ local function read_all(path)
     local data = handle.readAll()
     handle.close()
     return data
+end
+
+local function local_paths_for(path)
+    if config_ok and server_config and server_config.local_path then
+        local ok, config = pcall(server_config.load)
+        if ok and type(config) == "table" then
+            if server_config.local_paths then
+                return server_config.local_paths(config, path)
+            end
+            return { server_config.local_path(config, path) }
+        end
+    end
+    return { path }
+end
+
+local function exists_any(path)
+    for _, candidate in ipairs(local_paths_for(path)) do
+        if fs.exists(candidate) then
+            return true
+        end
+    end
+    return false
 end
 
 local function write_all(path, data, binary)
@@ -146,8 +172,35 @@ end
 
 local function collect_tree(root, relative, out)
     local path = relative == "" and root or combine(root, relative)
-    if fs.isDir(path) then
-        for _, child in ipairs(fs.list(path)) do
+    local local_full = path
+    local local_paths = { path }
+    if config_ok and server_config and server_config.local_path then
+        local ok, config = pcall(server_config.load)
+        if ok and type(config) == "table" then
+            local_full = server_config.local_path(config, path)
+            if server_config.local_paths then
+                local_paths = server_config.local_paths(config, path)
+            else
+                local_paths = { local_full }
+            end
+        end
+    end
+    local child_seen = {}
+    for _, candidate in ipairs(local_paths) do
+        if fs.exists(candidate) and fs.isDir(candidate) then
+            for _, child in ipairs(fs.list(candidate)) do
+                if not child_seen[child] then
+                    child_seen[child] = true
+                    collect_tree(root, relative == "" and child or combine(relative, child), out)
+                end
+            end
+        end
+    end
+    if next(child_seen) then
+        return true
+    end
+    if fs.exists(local_full) and fs.isDir(local_full) then
+        for _, child in ipairs(fs.list(local_full)) do
             collect_tree(root, relative == "" and child or combine(relative, child), out)
         end
         return true
@@ -157,7 +210,8 @@ local function collect_tree(root, relative, out)
     if not data then
         return false, err
     end
-    out[#out + 1] = {
+    out.by_path = out.by_path or {}
+    out.by_path[relative] = {
         path = relative,
         data = data,
     }
@@ -165,15 +219,36 @@ local function collect_tree(root, relative, out)
 end
 
 local function collect_image(source)
-    local files = {}
-    for _, path in ipairs(INSTALL_PATHS) do
-        local full = combine(source, path)
-        if fs.exists(full) then
-            local ok, err = collect_tree(source, path, files)
+    local collected = {
+        by_path = {},
+    }
+    for _, path in ipairs(BASE_ROM_PATHS) do
+        if fs.exists(path) then
+            local ok, err = collect_tree("", path, collected)
             if not ok then
                 return nil, err
             end
         end
+    end
+    local distro_kernel = combine(source, "Kernal")
+    if exists_any(distro_kernel) then
+        local ok, err = collect_tree(source, "Kernal", collected)
+        if not ok then
+            return nil, err
+        end
+    end
+    for _, path in ipairs(INSTALL_PATHS) do
+        local full = combine(source, path)
+        if exists_any(full) then
+            local ok, err = collect_tree(source, path, collected)
+            if not ok then
+                return nil, err
+            end
+        end
+    end
+    local files = {}
+    for _, file in pairs(collected.by_path) do
+        files[#files + 1] = file
     end
     table.sort(files, function(a, b)
         return a.path < b.path
@@ -193,7 +268,7 @@ local function profile_for_source(source)
     return {
         source = source,
         os = "HyperCube",
-        device = source and source:match("turtle") and "Turtle" or "TPhone",
+        device = "TPhone",
     }
 end
 
@@ -257,22 +332,6 @@ local function write_all(path, data, binary)
     return true
 end
 
-local function copy_file(source, target)
-    if not fs.exists(source) then
-        return false, "MissingSource"
-    end
-    if fs.exists(target) then
-        fs.delete(target)
-    end
-    fs.copy(source, target)
-    return true
-end
-
-local function dirname(path)
-    path = tostring(path or ""):gsub("\\", "/")
-    return path:match("^(.*)/[^/]+$") or ""
-end
-
 local function combine(a, b)
     if fs.combine then
         return fs.combine(a, b)
@@ -284,54 +343,6 @@ local function combine(a, b)
         return a .. b
     end
     return a .. "/" .. b
-end
-
-local function maybe_install_to_host()
-    if DEVICE ~= "Turtle" then
-        return false
-    end
-    if not shell or not shell.getRunningProgram then
-        return false
-    end
-
-    local running = shell.getRunningProgram()
-    local source_dir = dirname(running)
-    if source_dir == "" then
-        return false
-    end
-
-    local source_startup = combine(source_dir, "startup.lua")
-    local source_rom = combine(source_dir, ROM_FILE)
-    if not fs.exists(source_rom) or not fs.exists(source_startup) then
-        return false
-    end
-
-    print("Installing HyperCube Turtle OS locally...")
-    local ok, err = copy_file(source_rom, ROM_FILE)
-    if not ok then
-        error("ROM install failed: " .. tostring(err))
-    end
-    ok, err = copy_file(source_startup, "startup.lua")
-    if not ok then
-        error("startup install failed: " .. tostring(err))
-    end
-    write_all("hypercube_install", textutils.serialize({
-        os = "HyperCube",
-        device = "Turtle",
-        mode = "local-rom",
-        source = source_dir,
-        installed_at = os.epoch and os.epoch("utc") or os.clock(),
-        rom = ROM_FILE,
-    }), false)
-    print("Installed. Rebooting into local turtle OS.")
-    if os.reboot then
-        os.reboot()
-    end
-    return true
-end
-
-if maybe_install_to_host() then
-    return
 end
 
 local function xor_crypt(data, key)
@@ -612,6 +623,15 @@ function installer.new(options)
 
     function self:profile_source(profile)
         profile = profile or self:source_profile()
+        if config_ok and server_config and server_config.load then
+            local ok, config = pcall(server_config.load)
+            if ok and type(config) == "table"
+                and config.installer
+                and type(config.installer.roots) == "table"
+                and #config.installer.roots > 1 then
+                return profile.source or self.source
+            end
+        end
         return source_under_root(self.source_root, profile.source or self.source)
     end
 

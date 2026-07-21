@@ -456,9 +456,9 @@ Reserved and invalid bundle paths:
 - Parent traversal such as `../secret` is rejected.
 - Absolute paths are normalized to app-relative paths.
 
-### Server-Side App Folder
+### Server-Side Seed Folder
 
-You can also publish by placing files directly on the server:
+You can seed bundled apps by placing files in the server repo:
 
 ```text
 appstore/apps/doom/app.lua
@@ -468,7 +468,7 @@ appstore/apps/doom/assets/title.nfp
 appstore/apps/doom/manifest
 ```
 
-The server scans this folder on `appstore.list` and includes all files on `appstore.download`.
+On boot, the server imports missing seed apps from this folder into DiskDB. Runtime appstore list/download responses are served from sharded DiskDB records, with one manifest record and one record per app file.
 
 ## Dev API
 
