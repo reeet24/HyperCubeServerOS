@@ -8,6 +8,7 @@ local app = {
         color = C.gray,
         dock = true,
         render_mode = "exclusive",
+        refresh_rate = 10,
     },
 }
 
@@ -31,8 +32,7 @@ local function unlock_progress(state)
     return math.max(0, api.time() - state.dev_combo_started_at)
 end
 
-function app.render(ctx)
-    local state = ctx.state
+local function update_dev_unlock(state)
     if api.dev and api.dev.is_enabled and not api.dev.is_enabled() and state.ctrl_down and state.k_down then
         if unlock_progress(state) >= 10000 then
             local ok, err = api.dev.enable()
@@ -40,8 +40,14 @@ function app.render(ctx)
             state.ctrl_down = false
             state.k_down = false
             state.dev_combo_started_at = nil
+            return true
         end
     end
+    return false
+end
+
+function app.render(ctx)
+    local state = ctx.state
 
     ctx.buttons.shutdown = api.screen.button("shutdown", ctx.x, ctx.y, 12, "Shutdown", {
         fg = C.white,
@@ -89,6 +95,10 @@ function app.on_key(ctx)
         return true
     end
     return false
+end
+
+function app.on_tick(ctx)
+    return update_dev_unlock(ctx.state)
 end
 
 function app.on_touch(ctx)

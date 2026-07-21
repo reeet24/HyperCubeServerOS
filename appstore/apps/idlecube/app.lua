@@ -8,6 +8,7 @@ local app = {
         color = C.purple,
         dock = false,
         render_mode = "exclusive",
+        refresh_rate = 10,
     },
 }
 
@@ -125,12 +126,6 @@ end
 
 local function ensure_state(state)
     if state.ready then
-        local current = now()
-        apply_gain(state, current - (state.last_tick or current))
-        state.last_tick = current
-        if current - (state.last_persist or 0) >= 10000 then
-            save_state(state)
-        end
         return
     end
 
@@ -149,6 +144,22 @@ local function ensure_state(state)
     state.last_tick = current
     state.last_persist = current
     save_state(state)
+end
+
+local function tick_state(state, elapsed_ms)
+    if not state.ready then
+        return false
+    end
+    local current = now()
+    if elapsed_ms == nil then
+        elapsed_ms = current - (state.last_tick or current)
+    end
+    apply_gain(state, elapsed_ms)
+    state.last_tick = current
+    if current - (state.last_persist or 0) >= 10000 then
+        save_state(state)
+    end
+    return production_rate(state) > 0
 end
 
 local function gather(state)
@@ -272,6 +283,11 @@ function app.on_key(ctx)
         return true
     end
     return false
+end
+
+function app.on_tick(ctx)
+    ensure_state(ctx.state)
+    return tick_state(ctx.state, ctx.frame and ctx.frame.dt and (ctx.frame.dt * 1000) or nil)
 end
 
 function app.on_pause(ctx)

@@ -7,8 +7,11 @@ local app = {
         label = "Msg",
         color = C.cyan,
         render_mode = "exclusive",
+        refresh_rate = 10,
     },
 }
+
+local AUTO_REFRESH_MS = 5000
 
 local function truncate(text, width)
     text = tostring(text or "")
@@ -369,6 +372,7 @@ local function ensure_state(state)
     state.status = nil
     state.error = nil
     state.router = nil
+    state.last_auto_refresh = 0
 end
 
 local function draw_tabs(ctx, active)
@@ -910,6 +914,40 @@ function app.on_key(ctx)
     local state = ctx.state
     ensure_state(state)
     return ensure_router(state):key(ctx)
+end
+
+function app.on_tick(ctx)
+    local state = ctx.state
+    ensure_state(state)
+
+    local current = ctx.frame and ctx.frame.now and (ctx.frame.now * 1000) or api.time()
+    if current - (state.last_auto_refresh or 0) < AUTO_REFRESH_MS then
+        return false
+    end
+    state.last_auto_refresh = current
+
+    if not state.status then
+        return refresh_status(state)
+    end
+    if not status_active(state.status) then
+        return refresh_status(state)
+    end
+
+    local changed = refresh_chats(state)
+    if state.active_number then
+        local selected = state.selected_message_index
+        local ok, result = api.phone.chat(state.active_number, false)
+        if ok then
+            state.active_chat = result or { number = state.active_number, messages = {} }
+            state.selected_message_index = selected
+            state.error = nil
+            changed = true
+        else
+            state.error = result or "ChatUnavailable"
+            changed = true
+        end
+    end
+    return changed
 end
 
 return app

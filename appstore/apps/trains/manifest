@@ -3,5 +3,6 @@
   id = "trains",
   author = "Tesserac",
   description = "Live CMR train timetable sorted by soonest ETA.",
+  refresh_rate = 4,
   version = "1.0.0",
 }

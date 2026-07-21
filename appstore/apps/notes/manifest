@@ -3,5 +3,6 @@
   id = "notes",
   author = "Tesserac",
   description = "Simple local notes stored in your encrypted HCFS.",
+  refresh_rate = 10,
   version = "1.0.0",
 }

@@ -8,6 +8,7 @@ local app = {
         color = C.cyan,
         dock = false,
         render_mode = "exclusive",
+        refresh_rate = 10,
     },
 }
 

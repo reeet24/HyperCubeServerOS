@@ -8,8 +8,11 @@ local app = {
         color = C.green,
         dock = true,
         render_mode = "exclusive",
+        refresh_rate = 8,
     },
 }
+
+local AUTO_REFRESH_MS = 10000
 
 local function truncate(text, width)
     text = tostring(text or "")
@@ -66,6 +69,7 @@ local function ensure_state(state)
     state.error = nil
     state.status = nil
     state.account = nil
+    state.last_auto_refresh = 0
 end
 
 local function refresh(state)
@@ -345,6 +349,22 @@ function app.on_key(ctx)
         return true
     end
     return false
+end
+
+function app.on_tick(ctx)
+    local state = ctx.state
+    ensure_state(state)
+    if not state.loaded or state.view ~= "home" then
+        return false
+    end
+
+    local current = ctx.frame and ctx.frame.now and (ctx.frame.now * 1000) or api.time()
+    if current - (state.last_auto_refresh or 0) < AUTO_REFRESH_MS then
+        return false
+    end
+    state.last_auto_refresh = current
+    refresh(state)
+    return true
 end
 
 return app

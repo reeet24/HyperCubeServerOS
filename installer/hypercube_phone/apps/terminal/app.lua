@@ -7,6 +7,7 @@ local app = {
         label = "Term",
         color = C.black,
         render_mode = "exclusive",
+        refresh_rate = 10,
         dev_mode = true,
     },
 }

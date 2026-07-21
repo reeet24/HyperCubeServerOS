@@ -4,5 +4,6 @@
   label = "Idle",
   version = "1.0.0",
   author = "Tesserac",
-  description = "A simple incremental idle game with offline automation gains."
+  description = "A simple incremental idle game with offline automation gains.",
+  refresh_rate = 10,
 }

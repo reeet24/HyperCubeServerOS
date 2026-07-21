@@ -7,6 +7,7 @@ local app = {
         label = "Svc",
         color = C.purple,
         render_mode = "exclusive",
+        refresh_rate = 4,
     },
 }
 

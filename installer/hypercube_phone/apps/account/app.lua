@@ -8,6 +8,7 @@ local app = {
         color = C.blue,
         dock = true,
         render_mode = "exclusive",
+        refresh_rate = 4,
     },
 }
 
