@@ -468,7 +468,7 @@ appstore/apps/doom/assets/title.nfp
 appstore/apps/doom/manifest
 ```
 
-On boot, the server imports missing seed apps from this folder into DiskDB. Runtime appstore list/download responses are served from sharded DiskDB records, with one manifest record and one record per app file.
+On boot, the server imports missing seed apps from this folder into the sharded appstore DiskDB. Runtime appstore list/download responses are served from `appstore:*` records, with one manifest record and one record per app file.
 
 ## Dev API
 

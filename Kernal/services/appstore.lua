@@ -1,4 +1,5 @@
 local appstore = {}
+local diskdb_ok, diskdb_driver = pcall(require, "Kernal.drivers.diskdb")
 
 local APPSTORE_ROOT = "appstore"
 local APP_ROOT = "appstore/apps"
@@ -505,6 +506,30 @@ local function configure_storage(config)
     return APPSTORE_ROOT
 end
 
+local function configure_database(config)
+    APPSTORE_DB = nil
+    if not diskdb_ok or not diskdb_driver or not diskdb_driver.new then
+        return false, "DiskDBUnavailable"
+    end
+    local appstore_config = config and config.appstore or {}
+    local db_config = config and config.db or {}
+    local drives = appstore_config.drives or db_config.drives
+    if type(drives) ~= "table" and type(appstore_config.drive) == "table" then
+        drives = { appstore_config.drive }
+    end
+    local ok, db_or_err = pcall(diskdb_driver.new, {
+        root = appstore_config.db_root or "hypercube_appstore_db",
+        min_replicas = tonumber(appstore_config.min_replicas or db_config.min_replicas) or 2,
+        drives = drives,
+    })
+    if not ok or not db_or_err then
+        return false, db_or_err or "DiskDBInitFailed"
+    end
+    APPSTORE_DB = db_or_err
+    appstore.database = APPSTORE_DB
+    return true, APPSTORE_DB
+end
+
 local function safe_id(id)
     id = tostring(id or ""):lower():gsub("%s+", "")
     id = id:gsub("[^%w_%-%.]", "_")
@@ -896,6 +921,17 @@ local function db_manifest_to_item(manifest)
     }
 end
 
+local function protected_file_count_from_manifest(manifest)
+    local mutable_paths = manifest and manifest.mutable_paths or {}
+    local count = 0
+    for _, file in ipairs((manifest and manifest.files) or {}) do
+        if file.path and file.path ~= APP_INTEGRITY_FILE and not path_is_mutable(file.path, mutable_paths) then
+            count = count + 1
+        end
+    end
+    return count
+end
+
 local function save_app_to_db(item, files)
     if not APPSTORE_DB then
         return false, "DatabaseUnavailable"
@@ -941,7 +977,9 @@ local function save_app_to_db(item, files)
     if not ok then
         return false, err
     end
-    return true, public_item(db_manifest_to_item(manifest))
+    local result = db_manifest_to_item(manifest)
+    result.protected_file_count = protected_file_count_from_manifest(manifest)
+    return true, public_item(result)
 end
 
 local function read_app(id)
@@ -1039,7 +1077,7 @@ local function list_apps()
         local manifest = db_get(app_manifest_key(id))
         if type(manifest) == "table" then
             local item = db_manifest_to_item(manifest)
-            item.protected_file_count = #(build_integrity(item, manifest.files or {}).files or {})
+            item.protected_file_count = protected_file_count_from_manifest(manifest)
             apps[#apps + 1] = public_item(item)
         end
     end
@@ -1078,6 +1116,7 @@ local function publish_app(package)
     end
 
     local files = {}
+    local err
     local has_app_lua = false
     if type(package_files) == "table" then
         for key, file in pairs(package_files) do
@@ -1147,11 +1186,11 @@ function appstore.install(hypercube)
     if not hypercube.network then
         return false, "NetworkUnavailable"
     end
-    if not hypercube.database then
-        return false, "DatabaseUnavailable"
-    end
-    APPSTORE_DB = hypercube.database
     configure_storage(hypercube and hypercube.config)
+    local db_ok, db_or_err = configure_database(hypercube and hypercube.config)
+    if not db_ok then
+        return false, db_or_err
+    end
     ensure_dir(APPSTORE_ROOT)
     local seed_ok, seed_err = ensure_seed_apps()
     if not seed_ok then
@@ -1227,6 +1266,7 @@ appstore.root = APPSTORE_ROOT
 appstore.app_root = APP_ROOT
 appstore.token_path = TOKEN_PATH
 appstore.configure_storage = configure_storage
+appstore.configure_database = configure_database
 appstore.list_apps = list_apps
 appstore.read_app = read_app
 appstore.publish = publish_app

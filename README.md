@@ -188,7 +188,7 @@ The ROM loader decrypts `hypercube.rom`, installs it into memory as `HC_ROM`, ov
 
 ## App Store
 
-Server-hosted app packages are stored in DiskDB under sharded `appstore:*` records. The repo folder `appstore/apps` is seed material: on boot, missing seed apps are imported into DiskDB, then `appstore.list` and `appstore.download` serve from DiskDB.
+Server-hosted app packages are stored in a sharded DiskDB under `hypercube_appstore_db`, using `appstore:*` records. By default it uses the same configured DB drives and replica count as user data. The repo folder `appstore/apps` is seed material: on boot, missing seed apps are imported into DiskDB, then `appstore.list` and `appstore.download` serve from DiskDB.
 
 Apps may be single-file packages with only `app.lua` or multi-file bundles with local modules and assets:
 

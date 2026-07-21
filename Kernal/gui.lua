@@ -576,6 +576,8 @@ local CONFIG_FIELDS = {
     { key = "db.min_replicas", label = "DB replicas", kind = "number" },
     { key = "installer.root", label = "Installer root", kind = "string" },
     { key = "appstore.root", label = "App Store root", kind = "string" },
+    { key = "appstore.db_root", label = "App DB root", kind = "string" },
+    { key = "appstore.min_replicas", label = "App DB replicas", kind = "number" },
 }
 
 local function config_state(state)
@@ -928,6 +930,9 @@ local function ensure_screen_manager(state, hypercube)
                     if hypercube.appstore and hypercube.appstore.configure_storage then
                         hypercube.appstore.configure_storage(hypercube.config)
                     end
+                    if hypercube.appstore and hypercube.appstore.configure_database then
+                        hypercube.appstore.configure_database(hypercube.config)
+                    end
                     cfg_state.message = "Saved server_config."
                     if hypercube.logger then
                         hypercube.logger.warn("server_config saved from GUI", hypercube.root_context)
@@ -941,6 +946,9 @@ local function ensure_screen_manager(state, hypercube)
                     hypercube.config = hypercube.server_config.load()
                     if hypercube.appstore and hypercube.appstore.configure_storage then
                         hypercube.appstore.configure_storage(hypercube.config)
+                    end
+                    if hypercube.appstore and hypercube.appstore.configure_database then
+                        hypercube.appstore.configure_database(hypercube.config)
                     end
                     cfg_state.message = "Reloaded server_config."
                 else

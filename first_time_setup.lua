@@ -662,6 +662,16 @@ local config = {
     },
     appstore = {
         root = appstore_root,
+        db_root = "hypercube_appstore_db",
+        min_replicas = 1,
+        drives = {
+            {
+                name = appstore_drive.name,
+                mount = appstore_drive.mount,
+                id = appstore_drive.id,
+                label = appstore_drive.label,
+            },
+        },
         drive = {
             name = appstore_drive.name,
             mount = appstore_drive.mount,

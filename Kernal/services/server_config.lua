@@ -18,6 +18,9 @@ local DEFAULTS = {
     },
     appstore = {
         root = "appstore",
+        db_root = "hypercube_appstore_db",
+        min_replicas = 1,
+        drives = nil,
     },
 }
 
@@ -113,6 +116,8 @@ function server_config.load(path)
     config.db.root = normalize_path(config.db.root, DEFAULTS.db.root)
     config.installer.root = normalize_path(config.installer.root, DEFAULTS.installer.root)
     config.appstore.root = normalize_path(config.appstore.root, DEFAULTS.appstore.root)
+    config.appstore.db_root = normalize_path(config.appstore.db_root, DEFAULTS.appstore.db_root)
+    config.appstore.min_replicas = tonumber(config.appstore.min_replicas) or DEFAULTS.appstore.min_replicas
     config.network.protocol = tostring(config.network.protocol or DEFAULTS.network.protocol)
     config.network.hostname = tostring(config.network.hostname or DEFAULTS.network.hostname)
     return config
