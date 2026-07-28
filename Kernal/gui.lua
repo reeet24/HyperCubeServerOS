@@ -271,11 +271,18 @@ local function draw_installer(screen, hypercube, state, width, y, height)
     local result = hypercube.installer.last_result
     if result then
         if result.ok then
-            add_text("ROM installed to " .. tostring(result.mount), C.green)
-            add_text(tostring(result.rom or "hypercube.rom") .. " files=" .. tostring(result.packed_files or "?"), C.lightGray)
+            if result.mode == "shim" then
+                add_text("Installer shim written to " .. tostring(result.mount), C.green)
+                add_text("Boot target computer from this disk.", C.lightGray)
+            else
+                add_text("ROM installed to " .. tostring(result.mount), C.green)
+                add_text(tostring(result.rom or "hypercube.rom") .. " files=" .. tostring(result.packed_files or "?"), C.lightGray)
+            end
         else
             add_text("Install failed: " .. tostring(result.error), C.red)
         end
+    elseif source_profile.device == "UserServer" then
+        add_text("Installs a small network bootstrap floppy.", C.lightGray)
     else
         add_text("Installs startup.lua + obfuscated HyperCube ROM.", C.lightGray)
     end

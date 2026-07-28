@@ -192,6 +192,8 @@ The ROM loader decrypts `hypercube.rom`, installs it into memory as `HC_ROM`, ov
 
 The `user_server` install type is a lightweight HyperCube service host for players. It excludes Tesserac authority services such as account registration, banking, phone numbers, moderation, appstore hosting, web authority, DiskDB authority, and server rednet ports. It reuses the same slim client rednet driver as phones to reduce ROM size.
 
+Unlike phone installs, the server installer writes a small bootstrap shim to the selected floppy instead of a full ROM. Boot the target computer from that floppy while it has a modem attached. The shim discovers the main HyperCube server, requests the `UserServer` package through `update.download` and `update.chunk`, writes `hypercube.rom`, `startup.lua`, and `hypercube_install` to the target computer's root drive, then asks the user to remove the floppy and reboot.
+
 User services live under:
 
 ```text

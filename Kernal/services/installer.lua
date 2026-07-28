@@ -584,6 +584,239 @@ end
 ]]
 end
 
+local function user_server_shim_source()
+    return [[
+local PROTOCOL = "tesserac"
+local DEVICE = "UserServer"
+local SERVER_HOSTS = {
+    "HyperCubeServer",
+    "TesseracServer",
+    "tesserac-server",
+}
+
+local function now()
+    if os.epoch then
+        return os.epoch("utc")
+    end
+    return math.floor(os.clock() * 1000)
+end
+
+local function checksum(text)
+    text = tostring(text or "")
+    local a = 1
+    local b = 0
+    for i = 1, #text do
+        a = (a + text:byte(i)) % 65521
+        b = (b + a) % 65521
+    end
+    return tostring((b * 65536 + a) % 2147483647)
+end
+
+local function find_modem_side()
+    local fallback = nil
+    if peripheral and peripheral.getNames and peripheral.getType then
+        for _, side in ipairs(peripheral.getNames()) do
+            if peripheral.getType(side) == "modem" then
+                local modem = peripheral.wrap and peripheral.wrap(side) or nil
+                if modem and modem.isWireless and modem.isWireless() then
+                    return side
+                end
+                fallback = fallback or side
+            end
+        end
+    end
+    for _, side in ipairs({ "back", "top", "bottom", "left", "right", "front" }) do
+        if peripheral and peripheral.getType and peripheral.getType(side) == "modem" then
+            local modem = peripheral.wrap and peripheral.wrap(side) or nil
+            if modem and modem.isWireless and modem.isWireless() then
+                return side
+            end
+            fallback = fallback or side
+        end
+    end
+    return fallback
+end
+
+local function open_rednet()
+    if not rednet then
+        return false, "RednetUnavailable"
+    end
+    local side = find_modem_side()
+    if not side then
+        return false, "ModemNotFound"
+    end
+    if not rednet.isOpen(side) then
+        rednet.open(side)
+    end
+    return true, side
+end
+
+local function accept_announce(sender, message)
+    if sender and type(message) == "table" and message.type == "server.announce" then
+        return sender
+    end
+    return nil
+end
+
+local function discover_server()
+    local ok, err = open_rednet()
+    if not ok then
+        return nil, err
+    end
+    local deadline = os.clock() + 0.25
+    while os.clock() < deadline do
+        local sender, message = rednet.receive(PROTOCOL, math.max(0.05, deadline - os.clock()))
+        local id = accept_announce(sender, message)
+        if id then
+            return id
+        end
+    end
+    for _, hostname in ipairs(SERVER_HOSTS) do
+        if rednet.lookup then
+            local id = rednet.lookup(PROTOCOL, hostname)
+            if id then
+                return id
+            end
+        end
+    end
+    rednet.broadcast({
+        type = "server.lookup",
+        hosts = SERVER_HOSTS,
+        requester = os.getComputerID and os.getComputerID() or nil,
+        time = now(),
+    }, PROTOCOL)
+    deadline = os.clock() + 5
+    while os.clock() < deadline do
+        local sender, message = rednet.receive(PROTOCOL, math.max(0.05, deadline - os.clock()))
+        local id = accept_announce(sender, message)
+        if id then
+            return id
+        end
+    end
+    return nil, "ServerNotFound"
+end
+
+local function request(server_id, message, expected_type, timeout)
+    rednet.send(server_id, message, PROTOCOL)
+    local deadline = os.clock() + (timeout or 8)
+    while os.clock() < deadline do
+        local sender, reply = rednet.receive(PROTOCOL, math.max(0.05, deadline - os.clock()))
+        if sender == server_id and type(reply) == "table" and reply.type == expected_type then
+            if reply.ok == false then
+                return nil, reply.error or "RequestFailed"
+            end
+            return reply.result or reply
+        end
+    end
+    return nil, "Timeout"
+end
+
+local function write_all(path, data, binary)
+    local handle = fs.open(path, binary and "wb" or "w")
+    if not handle then
+        return false, "OpenFailed:" .. tostring(path)
+    end
+    handle.write(data or "")
+    handle.close()
+    return true
+end
+
+local function remove_if_exists(path)
+    if fs.exists(path) then
+        fs.delete(path)
+    end
+end
+
+local function install_package(package, rom_data)
+    if tostring(checksum(rom_data)) ~= tostring(package.rom_checksum or "") then
+        return false, "ChecksumMismatch"
+    end
+    remove_if_exists("hypercube.rom")
+    remove_if_exists("hypercube_install")
+    remove_if_exists("startup.lua")
+    local ok, err = write_all("hypercube.rom", rom_data, true)
+    if not ok then
+        return false, err
+    end
+    ok, err = write_all("startup.lua", package.startup or "", false)
+    if not ok then
+        return false, err
+    end
+    ok, err = write_all("hypercube_install", textutils.serialize({
+        os = package.os or "HyperCubeUserServer",
+        device = package.device or DEVICE,
+        installed_at = now(),
+        source = "hypernet",
+        mode = "network",
+        rom = "hypercube.rom",
+        version = package.version,
+        packed_files = package.packed_files,
+        rom_checksum = package.rom_checksum,
+        installer = "user_server_shim",
+    }), false)
+    if not ok then
+        return false, err
+    end
+    return true
+end
+
+term.clear()
+term.setCursorPos(1, 1)
+print("HyperCube User Server installer")
+print("")
+
+local server_id, discover_err = discover_server()
+if not server_id then
+    print("Server not found: " .. tostring(discover_err))
+    return
+end
+print("Connected to server " .. tostring(server_id))
+print("Requesting package...")
+
+local package, download_err = request(server_id, {
+    type = "update.download",
+    device = DEVICE,
+    version = "",
+}, "update.download.result", 12)
+if not package then
+    print("Download failed: " .. tostring(download_err))
+    return
+end
+
+local chunks = tonumber(package.chunks) or 0
+if chunks <= 0 then
+    print("Download failed: PackageEmpty")
+    return
+end
+
+local parts = {}
+for index = 1, chunks do
+    print("Chunk " .. tostring(index) .. "/" .. tostring(chunks))
+    local chunk, chunk_err = request(server_id, {
+        type = "update.chunk",
+        device = DEVICE,
+        index = index,
+    }, "update.chunk.result", 12)
+    if not chunk or type(chunk.data) ~= "string" then
+        print("Chunk failed: " .. tostring(chunk_err or "MissingData"))
+        return
+    end
+    parts[index] = chunk.data
+end
+
+print("Installing to computer...")
+local ok, err = install_package(package, table.concat(parts))
+if not ok then
+    print("Install failed: " .. tostring(err))
+    return
+end
+
+print("")
+print("Install complete.")
+print("Remove this disk and reboot the computer.")
+]]
+end
+
 local function clean_target(mount)
     for _, path in ipairs(INSTALL_PATHS) do
         local target = combine(mount, path)
@@ -676,6 +909,18 @@ function installer.new(options)
 
     function self:build_rom(target_mount)
         local profile = self:source_profile()
+        if profile.device == "UserServer" then
+            local ok, err = write_all(combine(target_mount, "startup.lua"), user_server_shim_source(), false)
+            if not ok then
+                return false, err
+            end
+            return true, {
+                file_count = 1,
+                mode = "shim",
+                device = profile.device,
+                checksum = checksum(user_server_shim_source()),
+            }
+        end
         local blob, file_count_or_err = build_rom_blob(self.source, profile)
         if not blob then
             return false, file_count_or_err
@@ -771,7 +1016,7 @@ function installer.new(options)
             self.last_result = { ok = false, error = "FsUnavailable", time = now() }
             return false, "FsUnavailable"
         end
-        if not fs.exists(self.source) then
+        if not exists_any(self.source) then
             self.last_result = { ok = false, error = "InstallImageMissing", time = now() }
             return false, "InstallImageMissing"
         end
@@ -798,8 +1043,8 @@ function installer.new(options)
                 device = profile.device,
                 installed_at = now(),
                 source = self.source,
-                mode = "rom",
-                rom = ROM_FILE,
+                mode = rom_result.mode or "rom",
+                rom = rom_result.mode == "shim" and nil or (rom_result.rom or ROM_FILE),
                 version = SOFTWARE_VERSION,
                 packed_files = rom_result.file_count,
                 rom_checksum = rom_result.checksum,
@@ -811,8 +1056,8 @@ function installer.new(options)
             ok = true,
             drive = drive.name,
             mount = drive.mount,
-            mode = "rom",
-            rom = ROM_FILE,
+            mode = rom_result.mode or "rom",
+            rom = rom_result.mode == "shim" and nil or (rom_result.rom or ROM_FILE),
             version = SOFTWARE_VERSION,
             device = self:source_profile().device,
             packed_files = rom_result.file_count,
