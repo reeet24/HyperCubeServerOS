@@ -254,13 +254,13 @@ end
 
 local drive_by_name
 
-local function choose_appstore_drive()
+local function choose_appstore_drives()
     while true do
         local drives = list_drives()
         print_drives(drives)
         print("")
-        print("Choose one disk drive for App Store storage.")
-        print("Uploaded apps will be stored there instead of on the server disk.")
+        print("Enter App Store DB drive names separated by commas.")
+        print("Uploaded apps will be sharded across these drives.")
         local present = {}
         for _, drive in ipairs(drives) do
             if drive.present and drive.mount then
@@ -271,13 +271,21 @@ local function choose_appstore_drive()
             print("Insert a disk for App Store storage, then press enter to rescan.")
             read()
         else
-            local value = ask("App Store disk drive", present[1].name)
+            local value = ask("App Store DB drives", present[1].name)
             local by_name = drive_by_name(present)
-            local drive = by_name[value]
-            if drive then
-                return drive
+            local selected = {}
+            local seen = {}
+            for token in value:gmatch("[^,%s]+") do
+                local drive = by_name[token]
+                if drive and not seen[drive.name] then
+                    selected[#selected + 1] = drive
+                    seen[drive.name] = true
+                end
             end
-            print("No valid App Store drive selected.")
+            if #selected > 0 then
+                return selected
+            end
+            print("No valid App Store DB drives selected.")
         end
     end
 end
@@ -293,7 +301,11 @@ function drive_by_name(drives)
     return out
 end
 
-local function choose_db_drives(appstore_drive)
+local function choose_db_drives(appstore_drives)
+    local appstore_by_name = {}
+    for _, drive in ipairs(appstore_drives or {}) do
+        appstore_by_name[drive.name] = true
+    end
     while true do
         local drives = list_drives()
         print_drives(drives)
@@ -307,7 +319,7 @@ local function choose_db_drives(appstore_drive)
         for token in value:gmatch("[^,%s]+") do
             local drive = by_name[token]
             if drive and drive.present and drive.mount and not seen[drive.name] then
-                if not appstore_drive or drive.name ~= appstore_drive.name then
+                if not appstore_by_name[drive.name] then
                     selected[#selected + 1] = drive
                     seen[drive.name] = true
                 end
@@ -626,12 +638,26 @@ if not http or not http.get then
 end
 
 local modem = choose_modem()
-local appstore_drive = choose_appstore_drive()
-local appstore_root = normalize(combine(appstore_drive.mount, "appstore"))
-local db_drives = choose_db_drives(appstore_drive)
+local appstore_drives = choose_appstore_drives()
+local appstore_root = normalize(combine(appstore_drives[1].mount, "appstore"))
+local appstore_replicas = tonumber(ask("App Store DB replica groups", math.min(2, #appstore_drives))) or 2
+if appstore_replicas < 1 then
+    appstore_replicas = 1
+end
+local db_drives = choose_db_drives(appstore_drives)
 local min_replicas = tonumber(ask("DB replica groups", 2)) or 2
 if min_replicas < 1 then
     min_replicas = 1
+end
+
+local appstore_records = {}
+for _, drive in ipairs(appstore_drives) do
+    appstore_records[#appstore_records + 1] = {
+        name = drive.name,
+        mount = drive.mount,
+        id = drive.id,
+        label = drive.label,
+    }
 end
 
 local db_records = {}
@@ -663,20 +689,13 @@ local config = {
     appstore = {
         root = appstore_root,
         db_root = "hypercube_appstore_db",
-        min_replicas = 1,
-        drives = {
-            {
-                name = appstore_drive.name,
-                mount = appstore_drive.mount,
-                id = appstore_drive.id,
-                label = appstore_drive.label,
-            },
-        },
+        min_replicas = appstore_replicas,
+        drives = appstore_records,
         drive = {
-            name = appstore_drive.name,
-            mount = appstore_drive.mount,
-            id = appstore_drive.id,
-            label = appstore_drive.label,
+            name = appstore_drives[1].name,
+            mount = appstore_drives[1].mount,
+            id = appstore_drives[1].id,
+            label = appstore_drives[1].label,
         },
     },
 }
@@ -692,6 +711,7 @@ local files = collect_files(tree, remote_root)
 print("Remote root: " .. (remote_root == "" and "/" or remote_root))
 print("Files: " .. tostring(#files))
 print("App Store root: " .. tostring(appstore_root))
+print("App Store DB drives: " .. tostring(#appstore_records))
 print("")
 print("This will install HyperCubeServerOS source files on this computer.")
 print("The appstore folder will be written to the selected App Store disk.")
@@ -727,6 +747,7 @@ print("Setup complete.")
 print("Wrote " .. CONFIG_PATH)
 print("Modem: " .. tostring(modem))
 print("App Store root: " .. tostring(appstore_root))
+print("App Store DB drives: " .. tostring(#appstore_records))
 print("DB drives: " .. tostring(#db_records))
 print("")
 if ask_yes("Reboot now?", true) then

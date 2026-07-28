@@ -172,6 +172,8 @@ local function normalize_metadata(metadata)
         System = "system",
         Kernel = "root",
         user = "user",
+        service = "service",
+        user_service_ui = "user_service_ui",
         system = "system",
         root = "root",
     }

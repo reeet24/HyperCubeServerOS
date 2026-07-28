@@ -237,6 +237,16 @@ local function draw_installer(screen, hypercube, state, width, y, height)
             bg = source_profile.device == "TBusinessPhone" and C.yellow or C.gray,
         },
     })
+    add_buttons({
+        {
+            id = "installer_user_server",
+            x = 4,
+            width = 14,
+            label = "UserSrv",
+            fg = source_profile.device == "UserServer" and C.black or C.white,
+            bg = source_profile.device == "UserServer" and C.yellow or C.gray,
+        },
+    })
     add_spacer()
     add_buttons({
         {
@@ -797,6 +807,10 @@ local function ensure_screen_manager(state, hypercube)
             elseif id == "installer_business_phone" and hypercube.installer and hypercube.installer.set_source then
                 hypercube.installer:set_source("business_phone")
                 hypercube.logger.info("installer source set business phone", hypercube.root_context)
+                return true
+            elseif id == "installer_user_server" and hypercube.installer and hypercube.installer.set_source then
+                hypercube.installer:set_source("user_server")
+                hypercube.logger.info("installer source set user server", hypercube.root_context)
                 return true
             elseif id == "installer_install" and hypercube.installer then
                 local ok, result = hypercube.installer:install()

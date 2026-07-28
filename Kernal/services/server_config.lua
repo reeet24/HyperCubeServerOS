@@ -19,7 +19,7 @@ local DEFAULTS = {
     appstore = {
         root = "appstore",
         db_root = "hypercube_appstore_db",
-        min_replicas = 1,
+        min_replicas = 2,
         drives = nil,
     },
 }

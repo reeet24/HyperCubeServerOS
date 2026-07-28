@@ -22,6 +22,7 @@ HyperCubeServer is the main Tesserac server OS for ComputerCraft. It hosts the T
 - `Kernal/services/`: Tesserac service implementations.
 - `appstore/`: Seed app catalog imported into the sharded DiskDB appstore.
 - `installer/hypercube_phone/`: Source image packaged into the TPhone ROM.
+- `installer/user_server/`: Source image packaged into the user-service server ROM.
 - `logs/`: Local server logs.
 - `package_server.lua`: In-game packaging helper.
 - `package_server.py`: Host-side packaging helper.
@@ -175,8 +176,9 @@ Profiles:
 
 - `phone`: `installer/hypercube_phone`, OS `HyperCube`, device `TPhone`
 - `business_phone`: `installer/hypercube_phone`, OS `HyperCube`, device `TBusinessPhone`
+- `user_server`: `installer/user_server`, OS `HyperCubeUserServer`, device `UserServer`
 
-ROM builds inherit the server `Kernal/` first, then overlay distro-specific files from `installer/<distro>/Kernal`. Keep only phone-specific overrides in distro kernel folders, such as device rednet drivers, GUI changes, app managers, and HCAPI helpers. Default apps, distro `init.lua`, and distro `startup.lua` still live under the distro folder.
+ROM builds inherit the server `Kernal/` first, then overlay distro-specific files from `installer/<distro>/Kernal`. Keep only distro-specific overrides in distro kernel folders, such as device rednet drivers, GUI changes, app managers, service APIs, and HCAPI helpers. Default apps, user services, distro `init.lua`, and distro `startup.lua` still live under the distro folder.
 
 Installed media includes:
 
@@ -185,6 +187,22 @@ Installed media includes:
 - `hypercube_install`: Serialized install metadata.
 
 The ROM loader decrypts `hypercube.rom`, installs it into memory as `HC_ROM`, overrides `require` and `loadfile` to read from the memory ROM, loads `init.lua`, boots the OS, ensures identity, and starts the GUI.
+
+## User Server
+
+The `user_server` install type is a lightweight HyperCube service host for players. It excludes Tesserac authority services such as account registration, banking, phone numbers, moderation, appstore hosting, web authority, DiskDB authority, and server rednet ports. It reuses the same slim client rednet driver as phones to reduce ROM size.
+
+User services live under:
+
+```text
+user_services/<service_id>/manifest
+user_services/<service_id>/service.lua
+user_services/<service_id>/ui.lua
+```
+
+`service.lua` starts at boot and remains running as a service daemon. `ui.lua` is opened from the user-server home screen and should return an app table with `render(ctx)` and optional `on_event(ctx)`.
+
+Services receive `ServiceAPI` and `HCAPI` aliases. The API exposes service-scoped storage under `user_services_data/<service_id>`, logging, client rednet request/send helpers, shared in-memory service state, and screen helpers for UI code. It gives services more capability than phone apps while still avoiding direct OS source modification.
 
 ## App Store
 

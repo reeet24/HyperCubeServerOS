@@ -13,9 +13,15 @@ local SOURCE_PROFILES = {
         os = "HyperCube",
         device = "TBusinessPhone",
     },
+    user_server = {
+        source = "installer/user_server",
+        os = "HyperCubeUserServer",
+        device = "UserServer",
+    },
 }
 local INSTALL_PATHS = {
     "apps",
+    "user_services",
     "init.lua",
     "startup.lua",
     "checklist.md",
@@ -548,18 +554,27 @@ local ok, err = pcall(function()
     if not init_loader then
         error("HyperCube init missing from ROM: " .. tostring(init_err))
     end
-    local TPhone = init_loader()
+    local system = init_loader()
     local boot_ok, boot_err = pcall(function()
-        return TPhone.boot()
+        if system and system.boot then
+            return system.boot()
+        end
+        return true
     end)
     if not boot_ok then
         error("HyperCube boot failed: " .. tostring(boot_err))
     end
-    local identity_ok, identity_err = TPhone.ensure_identity()
+    local identity_ok = true
+    local identity_err = nil
+    if system and system.ensure_identity then
+        identity_ok, identity_err = system.ensure_identity()
+    end
     if identity_ok then
-        TPhone.start_gui()
+        if system and system.start_gui then
+            system.start_gui()
+        end
     else
-        print("TesseracID required: " .. tostring(identity_err))
+        print("Identity required: " .. tostring(identity_err))
     end
 end)
 

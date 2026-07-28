@@ -53,6 +53,7 @@ function stdlib.make_env(context, apis)
         identity = apis.identity,
         tesseracid = apis.tesseracid,
         HCAPI = apis.HCAPI,
+        ServiceAPI = apis.ServiceAPI,
         screen = apis.screen,
         colors = colors,
         colours = colours,

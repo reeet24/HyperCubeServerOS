@@ -1,0 +1,5 @@
+{
+    id = "hello",
+    title = "Hello Service",
+    description = "Example background service with an on-demand UI.",
+}
