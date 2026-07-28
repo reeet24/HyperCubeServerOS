@@ -7,6 +7,7 @@ local vfs = require("Kernal.vfs_api")
 local logger = require("Kernal.logger")
 local init_system = require("Kernal.init_system")
 local program_runner = require("Kernal.program_runner")
+local tesseracid = require("Kernal.services.tesseracid")
 local screen_driver = require("Kernal.drivers.screen")
 local rednet_driver = require("Kernal.drivers.rednet")
 local service_manager = require("Kernal.services.user_service_manager")
@@ -26,13 +27,16 @@ local UserServer = {
     logger = logger,
     init = init_system,
     program_runner = program_runner,
+    tesseracid = tesseracid,
     screen_driver = screen_driver,
     rednet_driver = rednet_driver,
     service_manager = service_manager,
     gui = gui,
+    identity = nil,
     screen = nil,
     network = nil,
     services = {},
+    services_started = false,
     service_state = {},
     service_root = "user_services",
 }
@@ -91,6 +95,7 @@ UserServer.ui_context = context.create(2, {
 function UserServer.boot()
     logger.start_file("logs/kernel.log")
     logger.info("UserServer boot", UserServer.root_context)
+    UserServer.identity = tesseracid.load_local()
 
     local ok, screen_or_err, screen_err = pcall(screen_driver.init, {
         screen = {
@@ -107,14 +112,19 @@ function UserServer.boot()
     local net_ok, network_or_err = pcall(rednet_driver.init, {
         rednet = {
             mode = "client",
-            protocol = "user-server",
+            protocol = "tesserac",
             hostname = UserServer.name,
             os = UserServer.name,
             role = "user_server",
             device = "UserServer",
+            identity = UserServer.identity,
             logger = logger,
             verbose = false,
-            server_hosts = {},
+            server_hosts = {
+                "HyperCubeServer",
+                "TesseracServer",
+                "tesserac-server",
+            },
         },
     })
     if net_ok and network_or_err then
@@ -124,8 +134,6 @@ function UserServer.boot()
     else
         logger.warn("rednet unavailable: " .. tostring(network_or_err), UserServer.root_context)
     end
-
-    service_manager.start_services(UserServer)
 
     init_system.add_task("system.event_tick", function(proc_context)
         event_bus.emit("system.on_tick", { source = "init" }, proc_context)
@@ -139,7 +147,44 @@ function UserServer.boot()
     return init_system.run(UserServer.root_context)
 end
 
+function UserServer.start_services()
+    if UserServer.services_started then
+        return true
+    end
+    local ok, err = service_manager.start_services(UserServer)
+    if not ok then
+        return false, err
+    end
+    UserServer.services_started = true
+    return true
+end
+
 function UserServer.ensure_identity()
+    if UserServer.identity then
+        if UserServer.network then
+            UserServer.network:identify(UserServer.identity)
+        end
+        UserServer.start_services()
+        return true
+    end
+
+    local identity, err = tesseracid.ensure_device_identity(UserServer.network, logger, {
+        title = "User server account required",
+        os = UserServer.name,
+        role = "user_server",
+        device = "UserServer",
+    })
+    if not identity then
+        logger.warn("user server account unavailable: " .. tostring(err), UserServer.root_context)
+        return false, err
+    end
+
+    UserServer.identity = identity
+    if UserServer.network then
+        UserServer.network:identify(identity)
+    end
+    UserServer.start_services()
+    logger.info("signed in as " .. tostring(identity.username), UserServer.root_context)
     return true
 end
 

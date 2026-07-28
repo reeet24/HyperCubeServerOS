@@ -106,6 +106,7 @@ local function draw_status(screen, system, width, y, height)
         "Services: " .. tostring(#(system.services or {})),
         "Screen: " .. tostring(screen.width) .. "x" .. tostring(screen.height),
         network_line,
+        "Account: " .. tostring(system.identity and (system.identity.username or system.identity.tesserac_id) or "not signed in"),
     }
     for i = 1, math.min(#rows, height - 2) do
         screen:write(4, y + i, truncate(rows[i], width - 6), C.white, C.black)

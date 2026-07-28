@@ -106,6 +106,7 @@ function user_service_api.create(system, service_id)
     local id = tostring(service_id or "service")
     api.colors = colors or {}
     api.colours = colours or colors or {}
+    api.identity = system.identity
     api.fs = make_fs(combine("user_services_data", id))
     api.state = system.service_state[id] or {}
     system.service_state[id] = api.state

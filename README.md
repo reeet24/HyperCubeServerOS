@@ -194,6 +194,8 @@ The `user_server` install type is a lightweight HyperCube service host for playe
 
 Unlike phone installs, the server installer writes a small bootstrap shim to the selected floppy instead of a full ROM. Boot the target computer from that floppy while it has a modem attached. The shim discovers the main HyperCube server, requests the `UserServer` package through `update.download` and `update.chunk`, writes `hypercube.rom`, `startup.lua`, and `hypercube_install` to the target computer's root drive, then asks the user to remove the floppy and reboot.
 
+On first boot, a user-server prompts for sign-in or sign-up. It registers as a `user_server` device under the account, then starts user-service daemons after authentication so `ServiceAPI.net` requests can reach Tesserac services with the signed-in session. The user-server device role receives account identity, user DB, web origin/publish, banking, and Chirper scopes.
+
 User services live under:
 
 ```text

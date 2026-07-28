@@ -98,6 +98,14 @@ local DEFAULT_SCOPES = {
         "account.identity",
         "bank.deposit",
     },
+    user_server = {
+        "account.identity",
+        "bank.access",
+        "chirper.access",
+        "db.user",
+        "web.origin",
+        "web.publish",
+    },
     business_phone = {
         "account.identity",
         "app.install",
@@ -281,14 +289,15 @@ local function install_device()
     return "TPhone"
 end
 
-function tesseracid.ensure_phone_identity(network, logger)
+function tesseracid.ensure_device_identity(network, logger, options)
+    options = options or {}
     local existing = tesseracid.load_local()
     if existing then
         return existing
     end
 
     print("")
-    print("TesseracID required")
+    print(options.title or "TesseracID required")
     print("1. Sign in")
     print("2. Sign up")
 
@@ -314,20 +323,23 @@ function tesseracid.ensure_phone_identity(network, logger)
     local password = prompt("Password: ", true)
     local password_hash = tesseracid.password_hash(normalized, password, normalized)
     local message_type = choice == "2" and "auth.signup" or "auth.signin"
-    local device_type = install_device()
+    local device_type = options.device or install_device()
     local business_install = device_type == "TBusinessPhone"
+    local role = options.role or (business_install and "business_phone" or "phone")
+    local os_name = options.os or "HyperCube"
 
     local reply, request_err = request(network, {
         type = message_type,
         username = normalized,
         password_hash = password_hash,
-        account_type = business_install and "business" or nil,
+        account_type = options.account_type or (business_install and "business" or nil),
         device = {
-            os = "HyperCube",
-            role = business_install and "business_phone" or "phone",
+            os = os_name,
+            role = role,
             device = device_type,
             label = os.getComputerLabel and os.getComputerLabel() or nil,
             computer_id = os.getComputerID and os.getComputerID() or nil,
+            scopes = options.scopes,
         },
     }, message_type .. ".result")
 
@@ -351,6 +363,10 @@ function tesseracid.ensure_phone_identity(network, logger)
 
     tesseracid.save_local(identity)
     return identity
+end
+
+function tesseracid.ensure_phone_identity(network, logger)
+    return tesseracid.ensure_device_identity(network, logger)
 end
 
 function tesseracid.auth_database_key(username)
