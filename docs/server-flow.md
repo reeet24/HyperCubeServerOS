@@ -22,7 +22,7 @@ The source tree intentionally uses `Kernal/` as the kernel directory name. Keep 
 - `HyperCube.phone`: Phone number and message service.
 - `HyperCube.bank`: Bank of Ba$h service.
 - `HyperCube.installer`: Install media and update packaging service.
-- Other service modules such as app store, Chirper, trains, ATM monitor, moderation, and software updates.
+- Other service modules such as app store, ATM monitor, moderation, documentation, and software updates.
 
 Services are installed against `HyperCube` so they can share the same database, network driver, logger, and root context.
 
@@ -146,7 +146,7 @@ Installed service handlers handle:
 - Moderation: `moderation.*`
 - ATM monitor: `atm.*`
 - App store: `appstore.*`
-- Chirper and train schedule service families
+- App store, moderation, documentation, ATM, banking, phone, web, database, and update service families
 
 ## Web Flow
 

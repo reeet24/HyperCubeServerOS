@@ -19,10 +19,9 @@ local phone_service = require("Kernal.services.phone_numbers")
 local banking_server = require("Kernal.services.banking_server")
 local atm_monitor = require("Kernal.services.atm_monitor")
 local moderation_server = require("Kernal.services.moderation_server")
+local docs_server = require("Kernal.services.docs_server")
 local software_updates = require("Kernal.services.software_updates")
 local appstore = require("Kernal.services.appstore")
-local chirper_server = require("Kernal.services.chirper_server")
-local train_schedule_server = require("Kernal.services.train_schedule_server")
 local gui = require("Kernal.gui")
 
 local HyperCube = {
@@ -50,10 +49,9 @@ local HyperCube = {
     banking_server = banking_server,
     atm_monitor = atm_monitor,
     moderation_server = moderation_server,
+    docs_server = docs_server,
     software_updates = software_updates,
     appstore = appstore,
-    chirper_server = chirper_server,
-    train_schedule_server = train_schedule_server,
     gui = gui,
     screen = nil,
     network = nil,
@@ -62,8 +60,6 @@ local HyperCube = {
     installer = nil,
     phone = nil,
     bank = nil,
-    chirper = nil,
-    train_schedule = nil,
     identity = nil,
 }
 
@@ -210,6 +206,11 @@ function HyperCube.boot()
             logger.warn("moderation portal unavailable: " .. tostring(moderation_err), HyperCube.root_context)
         end
 
+        local docs_ok, docs_err = docs_server.install(HyperCube)
+        if not docs_ok then
+            logger.warn("docs portal unavailable: " .. tostring(docs_err), HyperCube.root_context)
+        end
+
         local updates_ok, updates_err = software_updates.install(HyperCube)
         if not updates_ok then
             logger.warn("software updates unavailable: " .. tostring(updates_err), HyperCube.root_context)
@@ -218,16 +219,6 @@ function HyperCube.boot()
         local store_ok, store_err = appstore.install(HyperCube)
         if not store_ok then
             logger.warn("App Store unavailable: " .. tostring(store_err), HyperCube.root_context)
-        end
-
-        local chirper_ok, chirper_err = chirper_server.install(HyperCube)
-        if not chirper_ok then
-            logger.warn("Chirper unavailable: " .. tostring(chirper_err), HyperCube.root_context)
-        end
-
-        local train_ok, train_err = train_schedule_server.install(HyperCube)
-        if not train_ok then
-            logger.warn("train schedule unavailable: " .. tostring(train_err), HyperCube.root_context)
         end
 
         init_system.add_task("service.banking", function(proc_context)
@@ -254,6 +245,14 @@ function HyperCube.boot()
             sandbox = HyperCube.root_context.sandbox,
         })
 
+        init_system.add_task("service.docs", function(proc_context)
+            return docs_server.start(HyperCube, proc_context)
+        end, {
+            privilege = "system",
+            daemon = true,
+            sandbox = HyperCube.root_context.sandbox,
+        })
+
         init_system.add_task("service.appstore", function(proc_context)
             return appstore.start(HyperCube, proc_context)
         end, {
@@ -262,21 +261,6 @@ function HyperCube.boot()
             sandbox = HyperCube.root_context.sandbox,
         })
 
-        init_system.add_task("service.chirper", function(proc_context)
-            return chirper_server.start(HyperCube, proc_context)
-        end, {
-            privilege = "system",
-            daemon = true,
-            sandbox = HyperCube.root_context.sandbox,
-        })
-
-        init_system.add_task("service.train_schedule", function(proc_context)
-            return train_schedule_server.start(HyperCube, proc_context)
-        end, {
-            privilege = "system",
-            daemon = true,
-            sandbox = HyperCube.root_context.sandbox,
-        })
     end
 
     init_system.add_task("system.event_tick", function(proc_context)

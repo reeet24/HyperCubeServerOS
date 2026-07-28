@@ -31,6 +31,7 @@ HyperCubeServer is the main Tesserac server OS for ComputerCraft. It hosts the T
 ## Dedicated Docs
 
 - `docs/userapp-api.md`: Phone user app API and HCAPI reference.
+- `docs/user-server-api.md`: User-server install, service lifecycle, and ServiceAPI reference.
 - `docs/web-api.md`: HyperNet web API, HCTML publishing, routed origins, and moderation web routes.
 - `docs/web-api-examples.md`: Copyable web publishing and origin examples.
 - `docs/server-flow.md`: Full server boot, network, service, identity, banking, phone, web, moderation, and update flow.
@@ -95,9 +96,8 @@ The setup script writes `server_config` and `hypercube_server_install`. On boot,
 - `hctml.lua`: HCTML compiler/renderer.
 - `phone_numbers.lua`: Phone subscription, billing, messages, inbox, and payment state.
 - `banking_server.lua`: Bank of Ba$h server integration.
-- `chirper_server.lua`: Chirper timeline service.
-- `train_schedule_server.lua`: CMR train schedule service.
 - `appstore.lua`: App catalog and package serving.
+- `docs_server.lua`: Public documentation portal at `docs.tesserac`.
 - `installer.lua`: Phone install media and update package builder.
 - `software_updates.lua`: Update status, ROM package download, and chunked ROM transfer.
 
@@ -121,7 +121,7 @@ Important message groups:
 - Phone: `phone.status`, `phone.subscribe`, `phone.pay`, `phone.send`, `phone.inbox`, `phone.sync`, `phone.chats`, `phone.chat`, `phone.chat.delete`
 - Updates: `update.status`, `update.download`, `update.chunk`
 
-The ROM integrity gate runs before registered service handlers. The only handler family allowed before ROM approval is `update.*`, so a rejected phone can download the correct ROM but cannot reach app store, banking, Chirper, train, account, database, web, or phone APIs.
+The ROM integrity gate runs before registered service handlers. The only handler family allowed before ROM approval is `update.*`, so a rejected phone can download the correct ROM but cannot reach app store, banking, account, database, web, or phone APIs.
 
 ## Phone ROM Integrity Gate
 
@@ -147,7 +147,7 @@ The server then:
 - replies with `welcome { ok = false, error = "ROMChecksumMismatch" }` when the ROM is not the server-approved ROM;
 - stores the sender as rejected and answers later main-server messages with `server.reject`.
 
-This blocks invalid phones from identity registration, sign-in, device registration, database access, web publishing, phone services, banking, Chirper, and other main-server APIs. `update.*` remains available so the phone can repair itself by downloading the approved ROM.
+This blocks invalid phones from identity registration, sign-in, device registration, database access, web publishing, phone services, banking, and other main-server APIs. `update.*` remains available so the phone can repair itself by downloading the approved ROM.
 
 ## Deterministic ROM Builds
 
@@ -194,7 +194,7 @@ The `user_server` install type is a lightweight HyperCube service host for playe
 
 Unlike phone installs, the server installer writes a small bootstrap shim to the selected floppy instead of a full ROM. Boot the target computer from that floppy while it has a modem attached. The shim discovers the main HyperCube server, requests the `UserServer` package through `update.download` and `update.chunk`, writes `hypercube.rom`, `startup.lua`, and `hypercube_install` to the target computer's root drive, then asks the user to remove the floppy and reboot.
 
-On first boot, a user-server prompts for sign-in or sign-up. It registers as a `user_server` device under the account, then starts user-service daemons after authentication so `ServiceAPI.net` requests can reach Tesserac services with the signed-in session. The user-server device role receives account identity, user DB, web origin/publish, banking, and Chirper scopes.
+On first boot, a user-server prompts for sign-in or sign-up. It registers as a `user_server` device under the account, then starts user-service daemons after authentication so `ServiceAPI.net` requests can reach Tesserac services with the signed-in session. The user-server device role receives account identity, user DB, web origin/publish, and banking scopes.
 
 User services live under:
 
@@ -224,10 +224,8 @@ Installed apps can use app-local `require("lib.render")` and `HCAPI.app.read("as
 
 Current packages:
 
-- `chirper`: Short-post timeline backed by TesseracID.
 - `idlecube`: Incremental idle game.
 - `notes`: Local notes stored through HCFS.
-- `trains`: CMR train timetable.
 
 Phone built-in apps live in `installer/hypercube_phone/apps` and include account, app store, banking, browser, logs, messages, network, services, and settings.
 
@@ -339,7 +337,6 @@ Default phone scopes include:
 - `account.identity`
 - `app.install`
 - `bank.access`
-- `chirper.access`
 - `db.user`
 - `phone.access`
 - `web.publish`

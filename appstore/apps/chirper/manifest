@@ -1,8 +1,0 @@
-{
-  title = "Chirper",
-  id = "chirper",
-  author = "Tesserac",
-  description = "A short-post timeline backed by your TesseracID.",
-  refresh_rate = 10,
-  version = "1.0.0",
-}

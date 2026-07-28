@@ -80,7 +80,6 @@ local DEFAULT_SCOPES = {
         "account.identity",
         "app.install",
         "bank.access",
-        "chirper.access",
         "db.user",
         "phone.access",
         "web.publish",
@@ -101,7 +100,6 @@ local DEFAULT_SCOPES = {
     user_server = {
         "account.identity",
         "bank.access",
-        "chirper.access",
         "db.user",
         "web.origin",
         "web.publish",
@@ -110,7 +108,6 @@ local DEFAULT_SCOPES = {
         "account.identity",
         "app.install",
         "bank.access",
-        "chirper.access",
         "db.user",
         "phone.access",
         "web.publish",

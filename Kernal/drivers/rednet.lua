@@ -286,13 +286,26 @@ local function reject_main_server(sender, protocol, reason)
     }, protocol)
 end
 
+local normalize_domain_name
+
 local function is_update_message(message)
     return type(message) == "table"
         and type(message.type) == "string"
         and message.type:sub(1, 7) == "update."
 end
 
-local function normalize_domain_name(domain)
+local function first_party_web_service(self, domain)
+    domain = normalize_domain_name(domain)
+    if self.moderation and domain == tostring(self.moderation.DOMAIN or "") then
+        return self.moderation
+    end
+    if self.docs_server and domain == tostring(self.docs_server.DOMAIN or "") then
+        return self.docs_server
+    end
+    return nil
+end
+
+function normalize_domain_name(domain)
     domain = tostring(domain or ""):lower():gsub("%s+", "")
     domain = domain:gsub("^hyper://", ""):gsub("^hc://", ""):gsub("^hcm://", "")
     domain = domain:gsub("/.*$", "")
@@ -1019,8 +1032,9 @@ function RednetDriver:poll(timeout)
         elseif type(message) == "table" and message.type == "web.get" then
             log_event(self, "debug", "web.get sender=" .. tostring(sender) .. " domain=" .. tostring(message.domain) .. " path=" .. tostring(message.path or "/"))
             local ok, result = false, "WebUnavailable"
-            if self.moderation and normalize_domain_name(message.domain) == tostring(self.moderation.DOMAIN or "") and self.hypercube then
-                ok, result = self.moderation.handle_web_request(self.hypercube, sender, message, self.clients)
+            local first_party = first_party_web_service(self, message.domain)
+            if first_party and self.hypercube then
+                ok, result = first_party.handle_web_request(self.hypercube, sender, message, self.clients)
                 if ok then
                     if type(result) == "table" and result.ok == nil then
                         result.ok = true
@@ -1051,8 +1065,9 @@ function RednetDriver:poll(timeout)
         elseif type(message) == "table" and message.type == "web.request" then
             log_event(self, "debug", "web.request sender=" .. tostring(sender) .. " domain=" .. tostring(message.domain) .. " path=" .. tostring(message.path or "/"))
             local ok, result = false, "WebUnavailable"
-            if self.moderation and normalize_domain_name(message.domain) == tostring(self.moderation.DOMAIN or "") and self.hypercube then
-                ok, result = self.moderation.handle_web_request(self.hypercube, sender, message, self.clients)
+            local first_party = first_party_web_service(self, message.domain)
+            if first_party and self.hypercube then
+                ok, result = first_party.handle_web_request(self.hypercube, sender, message, self.clients)
                 if ok then
                     if type(result) == "table" and result.ok == nil then
                         result.ok = true

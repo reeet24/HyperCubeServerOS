@@ -64,7 +64,7 @@ function hctml.parse(source)
     if type(source) ~= "string" then
         return nil, "InvalidHcTML"
     end
-    if #source > 12000 then
+    if #source > 60000 then
         return nil, "DocumentTooLarge"
     end
 
