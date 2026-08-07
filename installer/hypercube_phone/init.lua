@@ -373,6 +373,17 @@ function TPhone:install_app(package)
     return ok, result
 end
 
+function TPhone:install_dev_app(package)
+    local ok, result = app_manager.install_dev(package)
+    if ok then
+        self.apps_dirty = true
+        logger.info("installed dev app " .. tostring(result.id), self.root_context)
+    else
+        logger.warn("dev app install failed: " .. tostring(result), self.root_context)
+    end
+    return ok, result
+end
+
 function TPhone.ensure_identity()
     if TPhone.network_mode == "server" then
         return true

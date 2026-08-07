@@ -172,6 +172,60 @@ local function integrity_body(files)
     return table.concat(lines, "\n--\n")
 end
 
+local function normalize_mutable_paths(paths)
+    local out = {}
+    if type(paths) ~= "table" then
+        return out
+    end
+    for _, path in ipairs(paths) do
+        path = safe_relative(path)
+        if path and path ~= APP_INTEGRITY_FILE and path ~= "app.lua" then
+            out[#out + 1] = path
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+local function path_is_mutable(path, mutable_paths)
+    path = safe_relative(path)
+    if not path then
+        return false
+    end
+    for _, mutable in ipairs(mutable_paths or {}) do
+        if path == mutable or path:sub(1, #mutable + 1) == mutable .. "/" then
+            return true
+        end
+    end
+    return false
+end
+
+local function build_integrity(item, files)
+    local mutable_paths = normalize_mutable_paths(item.mutable_paths or item.mutable or item.unchecked_paths or item.mod_paths)
+    local protected = {}
+    for _, file in ipairs(files or {}) do
+        local path = safe_relative(file.path)
+        if path and path ~= APP_INTEGRITY_FILE and not path_is_mutable(path, mutable_paths) then
+            protected[#protected + 1] = {
+                path = path,
+                checksum = checksum(file.data or ""),
+            }
+        end
+    end
+    table.sort(protected, function(a, b)
+        return a.path < b.path
+    end)
+    return {
+        format = "HyperCubeAppIntegrity",
+        version = 1,
+        app_id = item.id,
+        app_version = item.version,
+        mutable_paths = mutable_paths,
+        files = protected,
+        checksum = checksum(integrity_body(protected)),
+    }
+end
+
 local function verify_user_app_integrity(id, app_dir)
     local encoded, err = read_all(combine(app_dir, APP_INTEGRITY_FILE))
     if not encoded then
@@ -486,18 +540,18 @@ local function verify_package_integrity(id, version, files, package)
     return metadata
 end
 
-function app_manager.install(package)
+local function prepare_install_files(package)
     if type(package) ~= "table" then
-        return false, "InvalidPackage"
+        return nil, nil, "InvalidPackage"
     end
     local id, id_err = safe_id(package.id)
     if not id then
-        return false, id_err
+        return nil, nil, id_err
     end
     local source = package.source or package.app_lua or package.code
     local package_files = package.files
     if (type(source) ~= "string" or source == "") and type(package_files) ~= "table" then
-        return false, "SourceRequired"
+        return nil, nil, "SourceRequired"
     end
 
     local install_files = {}
@@ -515,10 +569,10 @@ function app_manager.install(package)
             end
             path, err = safe_relative(path)
             if not path then
-                return false, err
+                return nil, nil, err
             end
             if path == "manifest" or path == APP_INTEGRITY_FILE then
-                return false, "ReservedPath"
+                return nil, nil, "ReservedPath"
             end
             if path == "app.lua" then
                 has_app_lua = true
@@ -538,12 +592,20 @@ function app_manager.install(package)
         has_app_lua = true
     end
     if not has_app_lua then
-        return false, "EntrypointRequired"
+        return nil, nil, "EntrypointRequired"
     end
 
     table.sort(install_files, function(a, b)
         return a.path < b.path
     end)
+    return id, install_files
+end
+
+function app_manager.install(package)
+    local id, install_files, err = prepare_install_files(package)
+    if not id then
+        return false, err
+    end
     local integrity, integrity_err = verify_package_integrity(id, package.version, install_files, package)
     if not integrity then
         return false, integrity_err
@@ -589,6 +651,54 @@ function app_manager.install(package)
         protected_files = #(integrity.files or {}),
         mutable_paths = integrity.mutable_paths or {},
     }
+end
+
+function app_manager.install_dev(package)
+    local id, install_files, err = prepare_install_files(package)
+    if not id then
+        return false, err
+    end
+    local app_source
+    for _, file in ipairs(install_files) do
+        if file.path == "app.lua" then
+            app_source = file.data
+            break
+        end
+    end
+    local loader, load_err
+    if load then
+        local ok, loaded_or_err, err_or_nil = pcall(load, app_source or "", "@" .. id .. "/app.lua")
+        if ok then
+            loader, load_err = loaded_or_err, err_or_nil
+        else
+            load_err = loaded_or_err
+        end
+    end
+    if not loader and loadstring then
+        loader, load_err = loadstring(app_source or "", "@" .. id .. "/app.lua")
+    end
+    if loader and setfenv then
+        setfenv(loader, {})
+    end
+    if not loader and load_err == nil then
+        load_err = "LoaderUnavailable"
+    end
+    if not loader then
+        return false, "InvalidUserApp:" .. tostring(load_err)
+    end
+
+    local package_copy = {}
+    for key, value in pairs(package) do
+        package_copy[key] = value
+    end
+    package_copy.id = id
+    package_copy.integrity = build_integrity(package_copy, install_files)
+    local encode_err
+    package_copy.integrity_encoded, encode_err = encode_integrity(package_copy.integrity)
+    if not package_copy.integrity_encoded then
+        return false, encode_err or "AppIntegrityEncodeFailed"
+    end
+    return app_manager.install(package_copy)
 end
 
 return app_manager

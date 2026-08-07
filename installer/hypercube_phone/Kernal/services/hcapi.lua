@@ -735,10 +735,76 @@ local function make_dev_api(tphone)
         return true, tostring(result)
     end
 
+    local function http_get(url, accept)
+        if not enabled() then
+            return nil, "DevModeRequired"
+        end
+        if not http or not http.get then
+            return nil, "HttpUnavailable"
+        end
+        local headers = {
+            ["User-Agent"] = "HyperCubePhone-DevInstaller",
+            ["Accept"] = accept or "*/*",
+        }
+        local ok, response_or_err, request_err = pcall(http.get, tostring(url or ""), headers)
+        if not ok then
+            return nil, response_or_err
+        end
+        local response = response_or_err
+        if not response and tostring(request_err or ""):lower():match("header") then
+            ok, response_or_err, request_err = pcall(http.get, tostring(url or ""))
+            if not ok then
+                return nil, response_or_err
+            end
+            response = response_or_err
+        end
+        if not response then
+            return nil, request_err or "HttpRequestFailed"
+        end
+        local body = response.readAll()
+        local code = response.getResponseCode and response.getResponseCode() or 200
+        response.close()
+        if tonumber(code) and tonumber(code) >= 400 then
+            return nil, "Http" .. tostring(code)
+        end
+        return body
+    end
+
+    local function decode_table(text)
+        if not enabled() then
+            return nil, "DevModeRequired"
+        end
+        if not textutils or not textutils.unserialize then
+            return nil, "TextutilsUnavailable"
+        end
+        local ok, result = pcall(textutils.unserialize, tostring(text or ""))
+        if ok and type(result) == "table" then
+            return result
+        end
+        return nil, "TableDecodeFailed"
+    end
+
+    local function decode_json(text)
+        if not enabled() then
+            return nil, "DevModeRequired"
+        end
+        if not textutils or not textutils.unserializeJSON then
+            return nil, "JsonUnavailable"
+        end
+        local ok, result = pcall(textutils.unserializeJSON, tostring(text or ""))
+        if ok and type(result) == "table" then
+            return result
+        end
+        return nil, "JsonDecodeFailed"
+    end
+
     return {
         is_enabled = enabled,
         enable = enable,
         eval = eval,
+        http_get = http_get,
+        decode_table = decode_table,
+        decode_json = decode_json,
     }
 end
 
@@ -781,6 +847,15 @@ function hcapi.create(tphone, app_id)
                     return false, "InstallUnavailable"
                 end
                 return tphone:install_app(package)
+            end,
+            install_dev = function(package)
+                if not tphone.install_dev_app then
+                    return false, "InstallUnavailable"
+                end
+                if not tphone.dev_mode then
+                    return false, "DevModeRequired"
+                end
+                return tphone:install_dev_app(package)
             end,
         },
         colors = C,

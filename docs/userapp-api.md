@@ -456,6 +456,24 @@ Reserved and invalid bundle paths:
 - Parent traversal such as `../secret` is rejected.
 - Absolute paths are normalized to app-relative paths.
 
+### Dev Remote Installs
+
+Phones with dev mode enabled can install valid user apps from the built-in Terminal app:
+
+```text
+appinstall pastebin <paste_id> [app_id]
+appinstall github <owner/repo> <path> [branch] [app_id]
+```
+
+Pastebin installs fetch `https://pastebin.com/raw/<paste_id>`. GitHub installs use the GitHub contents API and can install either a package file or a folder. Folder installs are treated as multi-file apps and must include `app.lua`.
+
+Remote dev installs accept either:
+
+- A serialized Lua table or JSON package with `id`, `source` or `files`, and optional `mutable_paths`.
+- Plain Lua app source, in which case `app_id` or a path-derived id is used.
+
+Because these installs are developer-only, the phone generates a local `.hcapp_integrity` record after download. The app still has to pass normal path checks, include an `app.lua` entrypoint, and compile as Lua before it is installed.
+
 ### Server-Side Seed Folder
 
 You can seed bundled apps by placing files in the server repo:
@@ -477,6 +495,9 @@ The terminal app and dev helpers require phone dev mode.
 - `api.dev.is_enabled()`
 - `api.dev.enable()`
 - `api.dev.eval(source)`
+- `api.dev.http_get(url, accept)`
+- `api.dev.decode_table(text)`
+- `api.dev.decode_json(text)`
 
 Dev mode is intended for trusted development phones only. Do not expose dev-mode workflows to normal users.
 
