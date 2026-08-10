@@ -43,6 +43,22 @@ local function read_manifest(path, id)
     return manifest
 end
 
+local function service_title(service)
+    return tostring(service and service.manifest and service.manifest.title or service and service.id or "?")
+end
+
+local function log_info(system, message)
+    if system and system.logger then
+        system.logger.info(tostring(message), system.root_context)
+    end
+end
+
+local function log_warn(system, message)
+    if system and system.logger then
+        system.logger.warn(tostring(message), system.root_context)
+    end
+end
+
 local function load_with_env(path, env)
     local unpack_args = unpack or table.unpack
     local attempts = {
@@ -91,8 +107,11 @@ end
 
 function manager.start_services(system)
     system.services = manager.scan(system.service_root or SERVICE_ROOT)
+    system.service_process_audit = system.service_process_audit or {}
+    log_info(system, "service scan found " .. tostring(#(system.services or {})) .. " service(s)")
     for _, service in ipairs(system.services) do
         if fs.exists(service.service_path) then
+            log_info(system, "service starting " .. tostring(service.id) .. " (" .. service_title(service) .. ")")
             local api = user_service_api.create(system, service.id)
             local result, err = program_runner.run(service.service_path, system.service_context, {
                 name = "service." .. service.id,
@@ -105,8 +124,47 @@ function manager.start_services(system)
             })
             if result and result.success then
                 service.pid = result.result and result.result.pid
-            elseif system.logger then
-                system.logger.warn("service start failed " .. service.id .. ": " .. tostring(err or result), system.root_context)
+                if service.pid then
+                    system.service_process_audit[service.pid] = {
+                        id = service.id,
+                        title = service_title(service),
+                        pid = service.pid,
+                        logged_dead = false,
+                    }
+                    log_info(system, "service started " .. tostring(service.id) .. " pid=" .. tostring(service.pid))
+                else
+                    log_warn(system, "service started without pid " .. tostring(service.id))
+                end
+            else
+                log_warn(system, "service start failed " .. service.id .. ": " .. tostring(err or result))
+            end
+        else
+            log_info(system, "service ui-only " .. tostring(service.id) .. " (" .. service_title(service) .. ")")
+        end
+    end
+    return true
+end
+
+function manager.audit_services(system)
+    local audit = system and system.service_process_audit
+    if not audit or not system.process or not system.process.get then
+        return true
+    end
+    for pid, record in pairs(audit) do
+        if not record.logged_dead then
+            local process = system.process.get(pid)
+            if not process then
+                record.logged_dead = true
+                log_warn(system, "service process missing " .. tostring(record.id) .. " pid=" .. tostring(pid))
+            elseif process.status == "Dead" then
+                record.logged_dead = true
+                local base = "service stopped " .. tostring(record.id) .. " pid=" .. tostring(pid)
+                    .. " exit=" .. tostring(process.exit_code)
+                if process.exit_code == 0 then
+                    log_info(system, base)
+                else
+                    log_warn(system, base .. " error=" .. tostring(process.error or "unknown"))
+                end
             end
         end
     end

@@ -302,6 +302,7 @@ function gui.run(system)
         print("UserServer running without screen.")
         return false, "ScreenUnavailable"
     end
+    system.screen.defer_rednet = true
 
     local state = {
         view = "logs",
@@ -322,6 +323,9 @@ function gui.run(system)
 
     while state.running do
         system.scheduler.tick({ type = "tick" })
+        if system.service_manager and system.service_manager.audit_services then
+            system.service_manager.audit_services(system)
+        end
         local timeout = math.max(0, next_frame - os.clock())
         local event = system.screen:pull_event(timeout)
         if event and event.type == "touch" then
