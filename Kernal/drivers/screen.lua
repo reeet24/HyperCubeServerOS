@@ -320,10 +320,15 @@ function Screen:pull_event(timeout)
             if event[2] == timer_id then
                 return nil, "Timeout"
             end
-        elseif event[1] == "rednet_message" and self.defer_rednet and os.queueEvent then
+        elseif event[1] == "rednet_message" and self.defer_rednet then
             cancel_timer()
-            os.queueEvent(event[1], event[2], event[3], event[4])
-            return nil, "RednetDeferred"
+            return {
+                type = "rednet_message",
+                sender = event[2],
+                message = event[3],
+                protocol = event[4],
+                raw = event,
+            }
         elseif event[1] == "monitor_touch" and (self.side == "monitor" or event[2] == self.side) then
             cancel_timer()
             return {

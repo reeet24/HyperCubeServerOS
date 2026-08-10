@@ -278,6 +278,8 @@ Broadcasts `message` on the given local protocol.
 
 Receives one local message from `protocol`. `timeout` defaults to `0.05` seconds and is capped at `5` seconds so daemons cannot block forever by accident.
 
+This call yields the service coroutine with a `wait_rednet` request. The user-server scheduler resumes it when `screen:pull_event()` returns a matching `rednet_message` event or when the timeout expires.
+
 Returns:
 
 - `{ sender = id, message = message, protocol = protocol }` on success

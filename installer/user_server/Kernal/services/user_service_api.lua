@@ -135,32 +135,6 @@ local function ensure_rednet(system)
     return false, "NetworkUnavailable"
 end
 
-local function receive_rednet_event(protocol, timeout)
-    timeout = tonumber(timeout)
-    if timeout == nil then
-        timeout = 0.05
-    end
-    timeout = math.max(0, math.min(timeout, 5))
-    if not os.startTimer or not os.pullEvent then
-        return rednet.receive(protocol, timeout)
-    end
-    local timer = os.startTimer and os.startTimer(timeout) or nil
-    while true do
-        local event = { os.pullEvent() }
-        if event[1] == "rednet_message" then
-            if event[4] == protocol then
-                return event[2], event[3], event[4]
-            end
-            if os.queueEvent then
-                os.queueEvent(event[1], event[2], event[3], event[4])
-            end
-            return nil, nil, nil
-        elseif timer and event[1] == "timer" and event[2] == timer then
-            return nil, nil, nil
-        end
-    end
-end
-
 local function make_rednet(system, service_id)
     local api = {}
     local hosted = {}
@@ -245,15 +219,19 @@ local function make_rednet(system, service_id)
         if not ok then
             return nil, err
         end
-        local sender, message, received_protocol = receive_rednet_event(protocol, timeout)
-        if not sender then
+        timeout = tonumber(timeout)
+        if timeout == nil then
+            timeout = 0.05
+        end
+        timeout = math.max(0, math.min(timeout, 5))
+        local packet = coroutine.yield("wait_rednet", {
+            protocol = protocol,
+            timeout = timeout,
+        })
+        if not packet then
             return nil, "NoMessage"
         end
-        return {
-            sender = sender,
-            message = message,
-            protocol = received_protocol or protocol,
-        }
+        return packet
     end
 
     function api.lookup(protocol, hostname)

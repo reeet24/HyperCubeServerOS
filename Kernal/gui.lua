@@ -1156,6 +1156,13 @@ function gui.run(hypercube)
 
         local timeout = math.max(0, next_frame - os.clock())
         local event = screen:pull_event(timeout)
+        if hypercube.scheduler and hypercube.scheduler.tick then
+            if event then
+                hypercube.scheduler.tick(event)
+            else
+                hypercube.scheduler.tick({ type = "tick" })
+            end
+        end
         if event and event.type == "touch" then
             local id = hit_button(state.buttons, event.x, event.y)
             if id == "shutdown" then

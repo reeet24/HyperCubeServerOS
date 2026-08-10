@@ -6,6 +6,7 @@ local process_manager = {}
 local process_table = {}
 local ready_queue = {}
 local next_pid = 1
+local unpack_args = unpack or table.unpack
 
 process_manager.statuses = {
     RUNNING = "Running",
@@ -235,6 +236,7 @@ function process_manager.create_process(_, metadata)
         cpu_time = 0,
         wake_at = nil,
         last_yield = nil,
+        resume_values = nil,
     }
     process.execution_content = process.coroutine
     ensure_context(process)
@@ -350,10 +352,52 @@ local function handle_yield(process, signal, payload)
         local duration = tonumber(payload) or 0
         process.status = process_manager.statuses.SLEEPING
         process.wake_at = os.clock() + math.max(0, duration)
+    elseif signal == "wait_rednet" then
+        local wait = type(payload) == "table" and payload or {}
+        local timeout = tonumber(wait.timeout)
+        process.status = process_manager.statuses.WAITING
+        process.wake_at = timeout and (os.clock() + math.max(0, timeout)) or nil
     elseif signal == "wait" or signal == "event" then
         process.status = process_manager.statuses.WAITING
     else
         process.status = process_manager.statuses.RUNNING
+    end
+end
+
+local function rednet_packet_for_wait(process, event)
+    if type(event) ~= "table" or event.type ~= "rednet_message" then
+        return nil
+    end
+    local wait = process.last_yield and process.last_yield.payload or {}
+    if type(wait) ~= "table" or tostring(wait.protocol or "") ~= tostring(event.protocol or "") then
+        return nil
+    end
+    return {
+        sender = event.sender,
+        message = event.message,
+        protocol = event.protocol,
+    }
+end
+
+local function wake_waiting_process(process, event)
+    if process.status ~= process_manager.statuses.WAITING then
+        return
+    end
+    local signal = process.last_yield and process.last_yield.signal
+    if signal == "wait_rednet" then
+        local packet = rednet_packet_for_wait(process, event)
+        if packet then
+            process.status = process_manager.statuses.RUNNING
+            process.wake_at = nil
+            process.resume_values = { packet }
+        elseif process.wake_at and os.clock() >= process.wake_at then
+            process.status = process_manager.statuses.RUNNING
+            process.wake_at = nil
+            process.resume_values = { nil }
+        end
+    elseif (signal == "wait" or signal == "event") and type(event) == "table" and event.type ~= "tick" then
+        process.status = process_manager.statuses.RUNNING
+        process.resume_values = { event }
     end
 end
 
@@ -368,10 +412,18 @@ function process_manager.tick_process_queue(event)
                 process.status = process_manager.statuses.RUNNING
                 process.wake_at = nil
             end
+            wake_waiting_process(process, event)
 
             if process.status == process_manager.statuses.RUNNING then
                 local runtime_start = os.clock()
-                local ok, signal, payload = coroutine.resume(process.coroutine, ensure_context(process), event)
+                local resume_values = process.resume_values
+                process.resume_values = nil
+                local ok, signal, payload
+                if resume_values then
+                    ok, signal, payload = coroutine.resume(process.coroutine, unpack_args(resume_values))
+                else
+                    ok, signal, payload = coroutine.resume(process.coroutine, ensure_context(process), event)
+                end
                 process.cpu_time = process.cpu_time + (os.clock() - runtime_start)
 
                 if not ok then

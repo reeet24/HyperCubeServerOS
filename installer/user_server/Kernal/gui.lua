@@ -322,12 +322,16 @@ function gui.run(system)
     local next_frame = os.clock() + frame_interval
 
     while state.running do
-        system.scheduler.tick({ type = "tick" })
+        local timeout = math.max(0, next_frame - os.clock())
+        local event = system.screen:pull_event(timeout)
+        if event then
+            system.scheduler.tick(event)
+        else
+            system.scheduler.tick({ type = "tick" })
+        end
         if system.service_manager and system.service_manager.audit_services then
             system.service_manager.audit_services(system)
         end
-        local timeout = math.max(0, next_frame - os.clock())
-        local event = system.screen:pull_event(timeout)
         if event and event.type == "touch" then
             local id = hit_button(state.buttons, event.x, event.y)
             if id == "shutdown" then
