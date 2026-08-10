@@ -246,6 +246,66 @@ local reply, err = ServiceAPI.net.request({
 }, "web.register.result", 8)
 ```
 
+## Local Rednet API
+
+`ServiceAPI.rednet` lets user-services host and use local ComputerCraft rednet protocols for non-HyperCube devices on the same modem network. `ServiceAPI.localnet` is an alias for the same API.
+
+The Tesserac protocol used by the user-server itself is reserved. Calls using that protocol return `ReservedProtocol`.
+
+### `ServiceAPI.rednet.host(protocol, hostname)`
+
+Opens the modem and advertises a rednet host name on `protocol`.
+
+Returns:
+
+- `true, { protocol = protocol, hostname = hostname }` on success
+- `false, "ReservedProtocol"` for the user-server's Tesserac protocol
+- `false, "RednetUnavailable"` or `false, "NetworkUnavailable"` if no modem/rednet path is available
+
+### `ServiceAPI.rednet.unhost(protocol, hostname)`
+
+Stops advertising a hosted protocol. If `hostname` is omitted, the last hostname hosted by this service for that protocol is used.
+
+### `ServiceAPI.rednet.send(target, message, protocol)`
+
+Sends `message` to a ComputerCraft computer id using the given local protocol.
+
+### `ServiceAPI.rednet.broadcast(message, protocol)`
+
+Broadcasts `message` on the given local protocol.
+
+### `ServiceAPI.rednet.receive(protocol, timeout)`
+
+Receives one local message from `protocol`. `timeout` defaults to `0.05` seconds and is capped at `5` seconds so daemons cannot block forever by accident.
+
+Returns:
+
+- `{ sender = id, message = message, protocol = protocol }` on success
+- `nil, "NoMessage"` on timeout
+- `nil, <error>` on setup/validation failure
+
+### `ServiceAPI.rednet.lookup(protocol, hostname)`
+
+Looks up a ComputerCraft rednet host on a local protocol.
+
+Example local echo service:
+
+```lua
+local api = ServiceAPI
+api.rednet.host("market-local", "market-terminal")
+
+while true do
+    local event = api.rednet.receive("market-local", 0.25)
+    if event and type(event.message) == "table" and event.message.type == "ping" then
+        api.rednet.send(event.sender, {
+            type = "pong",
+            server = api.identity and api.identity.username,
+        }, "market-local")
+    end
+    os.sleep(0)
+end
+```
+
 ## Screen API
 
 The screen API draws to the user-server screen while a UI is open.
@@ -319,6 +379,7 @@ Expected constraints:
 
 - No direct OS source modification API is exposed.
 - File access is scoped to `user_services_data/<service_id>`.
-- Network access goes through the signed-in user-server rednet client.
+- Tesserac service network access goes through the signed-in user-server rednet client.
+- Local rednet access is limited to non-reserved protocols and intended for nearby ComputerCraft devices.
 - Daemons must yield to keep the OS responsive.
 - UI code only runs while opened from the Services tab.

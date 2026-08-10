@@ -101,6 +101,197 @@ local function make_fs(root)
     return api
 end
 
+local function safe_protocol(protocol, system)
+    protocol = tostring(protocol or ""):gsub("^%s*(.-)%s*$", "%1")
+    if protocol == "" then
+        return nil, "ProtocolRequired"
+    end
+    if #protocol > 64 or protocol:find("[%z\1-\31\127]") then
+        return nil, "InvalidProtocol"
+    end
+    local reserved = system and system.network and system.network.protocol or "tesserac"
+    if protocol == reserved then
+        return nil, "ReservedProtocol"
+    end
+    return protocol
+end
+
+local function safe_hostname(hostname, fallback)
+    hostname = tostring(hostname or fallback or ""):gsub("^%s*(.-)%s*$", "%1")
+    hostname = hostname:gsub("[^%w_%-%.:]", "_")
+    if hostname == "" then
+        return fallback or "user-service"
+    end
+    return hostname:sub(1, 64)
+end
+
+local function ensure_rednet(system)
+    if not rednet then
+        return false, "RednetUnavailable"
+    end
+    if system and system.network and system.network.open then
+        return system.network:open()
+    end
+    return false, "NetworkUnavailable"
+end
+
+local function receive_rednet_event(protocol, timeout)
+    timeout = tonumber(timeout)
+    if timeout == nil then
+        timeout = 0.05
+    end
+    timeout = math.max(0, math.min(timeout, 5))
+    if not os.startTimer or not os.pullEvent then
+        return rednet.receive(protocol, timeout)
+    end
+    local timer = os.startTimer and os.startTimer(timeout) or nil
+    while true do
+        local event = { os.pullEvent() }
+        if event[1] == "rednet_message" then
+            if event[4] == protocol then
+                return event[2], event[3], event[4]
+            end
+            if os.queueEvent then
+                os.queueEvent(event[1], event[2], event[3], event[4])
+            end
+            return nil, nil, nil
+        elseif timer and event[1] == "timer" and event[2] == timer then
+            return nil, nil, nil
+        end
+    end
+end
+
+local function make_rednet(system, service_id)
+    local api = {}
+    local hosted = {}
+
+    function api.host(protocol, hostname)
+        local protocol_err
+        protocol, protocol_err = safe_protocol(protocol, system)
+        if not protocol then
+            return false, protocol_err
+        end
+        local ok, err = ensure_rednet(system)
+        if not ok then
+            return false, err
+        end
+        hostname = safe_hostname(hostname, "hc-" .. tostring(service_id or "service"))
+        if rednet.host then
+            rednet.host(protocol, hostname)
+        end
+        hosted[protocol] = hostname
+        return true, {
+            protocol = protocol,
+            hostname = hostname,
+        }
+    end
+
+    function api.unhost(protocol, hostname)
+        local protocol_err
+        protocol, protocol_err = safe_protocol(protocol, system)
+        if not protocol then
+            return false, protocol_err
+        end
+        hostname = hostname and safe_hostname(hostname) or hosted[protocol]
+        if rednet.unhost then
+            if not hostname then
+                return false, "HostnameRequired"
+            end
+            rednet.unhost(protocol, hostname)
+        end
+        hosted[protocol] = nil
+        return true
+    end
+
+    function api.send(target, message, protocol)
+        local protocol_err
+        protocol, protocol_err = safe_protocol(protocol, system)
+        if not protocol then
+            return false, protocol_err
+        end
+        target = tonumber(target)
+        if not target then
+            return false, "InvalidTarget"
+        end
+        local ok, err = ensure_rednet(system)
+        if not ok then
+            return false, err
+        end
+        rednet.send(target, message, protocol)
+        return true
+    end
+
+    function api.broadcast(message, protocol)
+        local protocol_err
+        protocol, protocol_err = safe_protocol(protocol, system)
+        if not protocol then
+            return false, protocol_err
+        end
+        local ok, err = ensure_rednet(system)
+        if not ok then
+            return false, err
+        end
+        rednet.broadcast(message, protocol)
+        return true
+    end
+
+    function api.receive(protocol, timeout)
+        local protocol_err
+        protocol, protocol_err = safe_protocol(protocol, system)
+        if not protocol then
+            return nil, protocol_err
+        end
+        local ok, err = ensure_rednet(system)
+        if not ok then
+            return nil, err
+        end
+        local sender, message, received_protocol = receive_rednet_event(protocol, timeout)
+        if not sender then
+            return nil, "NoMessage"
+        end
+        return {
+            sender = sender,
+            message = message,
+            protocol = received_protocol or protocol,
+        }
+    end
+
+    function api.lookup(protocol, hostname)
+        local protocol_err
+        protocol, protocol_err = safe_protocol(protocol, system)
+        if not protocol then
+            return nil, protocol_err
+        end
+        local ok, err = ensure_rednet(system)
+        if not ok then
+            return nil, err
+        end
+        if not rednet.lookup then
+            return nil, "LookupUnavailable"
+        end
+        return rednet.lookup(protocol, hostname)
+    end
+
+    function api.summary()
+        local protocols = {}
+        for protocol, hostname in pairs(hosted) do
+            protocols[#protocols + 1] = {
+                protocol = protocol,
+                hostname = hostname,
+            }
+        end
+        table.sort(protocols, function(a, b)
+            return a.protocol < b.protocol
+        end)
+        return {
+            side = system and system.network and system.network.side or nil,
+            protocols = protocols,
+        }
+    end
+
+    return api
+end
+
 function user_service_api.create(system, service_id)
     local api = {}
     local id = tostring(service_id or "service")
@@ -138,6 +329,8 @@ function user_service_api.create(system, service_id)
             return system.network:request(message, expected, timeout or 5)
         end,
     }
+    api.rednet = make_rednet(system, id)
+    api.localnet = api.rednet
 
     api.screen = {
         write = function(x, y, text, fg, bg)
