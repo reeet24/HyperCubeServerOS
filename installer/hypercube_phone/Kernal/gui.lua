@@ -334,7 +334,9 @@ function dock_order(app)
         messages = 2,
         banking = 3,
         browser = 4,
-        settings = 5,
+        files = 5,
+        word = 6,
+        settings = 7,
     }
     return priority[id] or 50
 end
@@ -637,33 +639,40 @@ local function hit_app(apps, x, y)
     return nil
 end
 
-local function set_active_app(tphone, state, app_id)
-    if state.active_app == app_id then
-        return
-    end
+local function set_active_app(tphone, state, app_id, launch)
+    local same_app = state.active_app == app_id
 
-    local previous = find_app(state, state.active_app)
-    if previous and type(previous.on_pause) == "function" then
-        local pause_ctx = {
-            active = false,
-            state = state.app_state[previous.manifest.id] or {},
-        }
-        state.app_state[previous.manifest.id] = pause_ctx.state
-        local ok, err = pcall(previous.on_pause, pause_ctx)
-        if not ok and tphone.logger then
-            tphone.logger.warn("app pause failed " .. tostring(previous.manifest.id) .. ": " .. tostring(err), tphone.root_context)
+    if not same_app then
+        local previous = find_app(state, state.active_app)
+        if previous and type(previous.on_pause) == "function" then
+            local pause_ctx = {
+                active = false,
+                state = state.app_state[previous.manifest.id] or {},
+            }
+            state.app_state[previous.manifest.id] = pause_ctx.state
+            local ok, err = pcall(previous.on_pause, pause_ctx)
+            if not ok and tphone.logger then
+                tphone.logger.warn("app pause failed " .. tostring(previous.manifest.id) .. ": " .. tostring(err), tphone.root_context)
+            end
         end
     end
 
     state.active_app = app_id
     state.borderless_chrome_until = 0
     state.borderless_chrome_visible = false
+    state.app_launch = state.app_launch or {}
+    if app_id and launch then
+        state.app_launch[app_id] = launch
+    end
 
     local current = find_app(state, state.active_app)
     if current and type(current.on_resume) == "function" then
+        local current_launch = state.app_launch[current.manifest.id]
         local resume_ctx = {
             active = true,
             state = state.app_state[current.manifest.id] or {},
+            launch = current_launch,
+            open_file = current_launch and current_launch.open_file or nil,
         }
         state.app_state[current.manifest.id] = resume_ctx.state
         local ok, err = pcall(current.on_resume, resume_ctx)
@@ -671,6 +680,29 @@ local function set_active_app(tphone, state, app_id)
             tphone.logger.warn("app resume failed " .. tostring(current.manifest.id) .. ": " .. tostring(err), tphone.root_context)
         end
     end
+end
+
+local function file_extension(path)
+    return tostring(path or ""):match("%.([^%./]+)$")
+end
+
+local function handle_shell_request(tphone, state)
+    local request = tphone.shell_request
+    if type(request) ~= "table" then
+        return false
+    end
+    tphone.shell_request = nil
+    if request.type == "open_file" then
+        local ext = tostring(file_extension(request.path) or ""):lower()
+        if ext == "txt" then
+            set_active_app(tphone, state, "word", { open_file = request.path })
+            return true
+        end
+        if tphone.logger then
+            tphone.logger.warn("no desktop app can open " .. tostring(request.path), tphone.root_context)
+        end
+    end
+    return false
 end
 
 local function reveal_borderless_chrome(state)
@@ -775,6 +807,7 @@ function gui.run(tphone)
         apps = {},
         buttons = {},
         app_buttons = {},
+        app_launch = {},
         home_page = 1,
         home_page_count = 1,
         borderless_chrome_until = 0,
@@ -794,6 +827,9 @@ function gui.run(tphone)
         if tphone.apps_dirty then
             state.installed_apps = app_manager.load_all(tphone)
             tphone.apps_dirty = false
+            state.needs_render = true
+        end
+        if handle_shell_request(tphone, state) then
             state.needs_render = true
         end
         local timeout = math.max(0, next_frame - os.clock())

@@ -526,6 +526,21 @@ Errors include:
 - `NewPageFailed`
 - `EndPageFailed`
 
+## Desktop UserFS API
+
+Desktop apps also receive `api.userfs` and `api.desktop`. Phone apps should continue using app-scoped `api.fs`.
+
+`api.userfs` exposes the signed-in user's full UserFS:
+
+- `api.userfs.read(path)` returns file text or `nil, err`.
+- `api.userfs.write(path, data)` writes text, creating parent folders as needed.
+- `api.userfs.list(path)` lists child names in a folder.
+- `api.userfs.stat(path)` returns `{ path, name, kind, size, updated_at }`.
+- `api.userfs.exists(path)` returns a boolean.
+- `api.userfs.delete(path)` deletes a file or folder entry.
+
+`api.desktop.open_file(path)` asks the desktop shell to open a file with a registered app. The built-in desktop currently routes `.txt` files to HyperWrite.
+
 ## Recommended App Pattern
 
 1. Keep app state in a local `state` table.

@@ -81,7 +81,9 @@ local function app_order(id)
         messages = 2,
         banking = 3,
         browser = 4,
-        settings = 5,
+        files = 5,
+        word = 6,
+        settings = 7,
     }
     return priority[id] or 50
 end

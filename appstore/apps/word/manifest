@@ -3,9 +3,9 @@
   id = "word",
   label = "Write",
   author = "Tesserac",
-  description = "Desktop document editor with local save and printer support.",
+  description = "Desktop document editor with UserFS open, save, and printer support.",
   refresh_rate = 12,
   render_mode = "window",
-  version = "1.0.0",
+  version = "1.1.0",
   devices = { "TDesktop", "TBusinessDesktop" },
 }

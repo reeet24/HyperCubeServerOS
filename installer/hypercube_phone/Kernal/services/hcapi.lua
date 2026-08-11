@@ -242,6 +242,9 @@ function UserFS:read(path)
 end
 
 function UserFS:write(path, data)
+    if normalize_path(path) == "/" then
+        return false, "InvalidPath"
+    end
     local parent, name = self:parent(path, true)
     if not parent then
         return false, name
@@ -270,11 +273,39 @@ function UserFS:list(path)
     return out
 end
 
+function UserFS:stat(path)
+    local normalized = normalize_path(path or "/")
+    if normalized == "/" then
+        return {
+            path = "/",
+            name = "/",
+            kind = "dir",
+            size = 0,
+            updated_at = self.tree.updated_at,
+        }
+    end
+    local node, err = self:resolve(normalized, false)
+    if not node then
+        return nil, err
+    end
+    local name = normalized:match("([^/]+)$") or normalized
+    return {
+        path = normalized,
+        name = name,
+        kind = node.kind,
+        size = node.kind == "file" and #(node.data or "") or 0,
+        updated_at = node.updated_at,
+    }
+end
+
 function UserFS:exists(path)
     return self:resolve(path, false) ~= nil
 end
 
 function UserFS:delete(path)
+    if normalize_path(path) == "/" then
+        return false, "CannotDeleteRoot"
+    end
     local parent, name = self:parent(path, false)
     if not parent then
         return false, name
@@ -721,6 +752,63 @@ local function make_fs_api(user_fs, app_id)
     }
 end
 
+local function make_userfs_api(tphone, user_fs)
+    local function desktop_required()
+        if not is_desktop_device(tphone) then
+            return false, "DesktopRequired"
+        end
+        return true
+    end
+
+    return {
+        read = function(path)
+            local ok, err = desktop_required()
+            if not ok then return nil, err end
+            return user_fs:read(path)
+        end,
+        write = function(path, data)
+            local ok, err = desktop_required()
+            if not ok then return false, err end
+            return user_fs:write(path, data)
+        end,
+        list = function(path)
+            local ok, err = desktop_required()
+            if not ok then return nil, err end
+            return user_fs:list(path or "/")
+        end,
+        stat = function(path)
+            local ok, err = desktop_required()
+            if not ok then return nil, err end
+            return user_fs:stat(path or "/")
+        end,
+        exists = function(path)
+            local ok = desktop_required()
+            if not ok then return false end
+            return user_fs:exists(path)
+        end,
+        delete = function(path)
+            local ok, err = desktop_required()
+            if not ok then return false, err end
+            return user_fs:delete(path)
+        end,
+    }
+end
+
+local function make_desktop_api(tphone)
+    return {
+        open_file = function(path)
+            if not is_desktop_device(tphone) then
+                return false, "DesktopRequired"
+            end
+            tphone.shell_request = {
+                type = "open_file",
+                path = tostring(path or ""),
+            }
+            return true
+        end,
+    }
+end
+
 local function make_dev_api(tphone)
     local function enabled()
         return tphone.dev_mode == true
@@ -877,6 +965,8 @@ function hcapi.create(tphone, app_id)
         phone = make_phone_api(tphone),
         printer = make_printer_api(tphone),
         fs = make_fs_api(tphone.hcfs, app_id),
+        userfs = make_userfs_api(tphone, tphone.hcfs),
+        desktop = make_desktop_api(tphone),
         dev = make_dev_api(tphone),
         device = make_device_api(tphone),
         apps = {

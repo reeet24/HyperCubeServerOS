@@ -61,7 +61,10 @@ function printer_driver.print(text, options)
     local title = tostring(options.title or "HyperCube Document")
     local page_width, page_height = 25, 21
     if printer.getPageSize then
-        local w, h = printer.getPageSize()
+        local size_ok, w, h = pcall(printer.getPageSize)
+        if not size_ok then
+            return false, "PageSizeFailed:" .. tostring(w)
+        end
         page_width = tonumber(w) or page_width
         page_height = tonumber(h) or page_height
     end
@@ -70,23 +73,38 @@ function printer_driver.print(text, options)
     local page = 0
     local index = 1
     while index <= #lines do
-        local ok, err = printer.newPage()
+        local call_ok, ok, err = pcall(printer.newPage)
+        if not call_ok then
+            return false, "NewPageFailed:" .. tostring(ok)
+        end
         if not ok then
             return false, err or "NewPageFailed"
         end
         page = page + 1
         if printer.setPageTitle then
-            printer.setPageTitle(title .. (page > 1 and (" " .. tostring(page)) or ""))
+            local title_ok, title_err = pcall(printer.setPageTitle, title .. (page > 1 and (" " .. tostring(page)) or ""))
+            if not title_ok then
+                return false, "SetTitleFailed:" .. tostring(title_err)
+            end
         end
         for y = 1, page_height do
             if index > #lines then
                 break
             end
-            printer.setCursorPos(1, y)
-            printer.write(lines[index])
+            local cursor_ok, cursor_err = pcall(printer.setCursorPos, 1, y)
+            if not cursor_ok then
+                return false, "CursorFailed:" .. tostring(cursor_err)
+            end
+            local write_ok, write_err = pcall(printer.write, lines[index])
+            if not write_ok then
+                return false, "WriteFailed:" .. tostring(write_err)
+            end
             index = index + 1
         end
-        ok, err = printer.endPage()
+        call_ok, ok, err = pcall(printer.endPage)
+        if not call_ok then
+            return false, "EndPageFailed:" .. tostring(ok)
+        end
         if not ok then
             return false, err or "EndPageFailed"
         end

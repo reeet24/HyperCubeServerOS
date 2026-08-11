@@ -619,9 +619,10 @@ local function ensure_seed_apps()
     if fs and fs.exists and fs.list and fs.exists(APP_ROOT) then
         for _, id in ipairs(fs.list(APP_ROOT)) do
             local safe = safe_id(id)
-            if safe and not db_get(app_manifest_key(safe)) then
+            if safe then
                 local item = read_app_from_fs(safe)
-                if item then
+                local existing = db_get(app_manifest_key(safe))
+                if item and (not existing or tostring(existing.app_version or existing.version or "") ~= tostring(item.version or "")) then
                     local ok, err = save_app_to_db(item, item.files or {})
                     if not ok then
                         return false, err

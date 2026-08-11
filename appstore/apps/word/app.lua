@@ -13,8 +13,7 @@ local app = {
     },
 }
 
-local DOC_FILE = "document.txt"
-local TITLE_FILE = "title.txt"
+local LAST_FILE = "last_path.txt"
 local MAX_BODY = 12000
 
 local function truncate(text, width)
@@ -39,40 +38,134 @@ local function button(ctx, id, x, y, width, label, bg)
     })
 end
 
+local function basename(path)
+    return tostring(path or ""):match("([^/]+)$") or "Untitled.txt"
+end
+
+local function parent(path)
+    path = tostring(path or "/")
+    if path == "/" then
+        return "/"
+    end
+    local value = path:gsub("/+$", ""):match("^(.*)/[^/]+$") or "/"
+    if value == "" then
+        value = "/"
+    end
+    return value
+end
+
+local function combine(path, name)
+    if path == "/" or path == "" then
+        return "/" .. tostring(name or "")
+    end
+    return tostring(path or "/") .. "/" .. tostring(name or "")
+end
+
+local function safe_file_name(name)
+    name = tostring(name or ""):gsub("[/\\:*?\"<>|]", "_")
+    name = name:gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then
+        name = "Untitled.txt"
+    end
+    if not name:lower():match("%.txt$") then
+        name = name .. ".txt"
+    end
+    return name
+end
+
+local function title_from_name(name)
+    return tostring(name or "Untitled.txt"):gsub("%.txt$", "")
+end
+
+local function doc_path(state)
+    if state.file_path and state.file_path ~= "" then
+        return state.file_path
+    end
+    return "/Documents/" .. safe_file_name(state.file_name)
+end
+
+local function wrapped_body(width, body)
+    if api.screen.wrap then
+        return api.screen.wrap(body, math.max(1, width))
+    end
+    return { tostring(body or "") }
+end
+
+local function load_path(state, path)
+    if not api.userfs or not api.userfs.read then
+        state.error = "UserFSUnavailable"
+        state.message = nil
+        return false
+    end
+    local body, err = api.userfs.read(path)
+    if body == nil then
+        state.error = tostring(err or "OpenFailed")
+        state.message = nil
+        return false
+    end
+    state.file_path = path
+    state.file_name = basename(path)
+    state.title = title_from_name(state.file_name)
+    state.body = body
+    state.scroll = 0
+    state.focus = "body"
+    state.error = nil
+    state.message = "Opened " .. state.file_name
+    if api.fs and api.fs.write then
+        api.fs.write(LAST_FILE, path)
+    end
+    return true
+end
+
 local function ensure_state(state)
     if state.ready then
         return
     end
     state.ready = true
-    state.title = api.fs.read(TITLE_FILE) or "Untitled"
-    state.body = api.fs.read(DOC_FILE) or ""
+    state.file_path = nil
+    state.file_name = "Untitled.txt"
+    state.title = "Untitled"
+    state.body = ""
     state.focus = "body"
     state.scroll = 0
+    state.picker = false
+    state.picker_path = "/Documents"
+    state.picker_scroll = 0
     state.message = nil
     state.error = nil
+
+    local last = api.fs and api.fs.read and api.fs.read(LAST_FILE) or nil
+    if last and last ~= "" and api.userfs and api.userfs.exists and api.userfs.exists(last) then
+        load_path(state, last)
+    end
 end
 
 local function save_doc(state)
-    local ok, err = api.fs.write(TITLE_FILE, state.title)
+    if not api.userfs or not api.userfs.write then
+        state.error = "UserFSUnavailable"
+        state.message = nil
+        return false
+    end
+    local path = doc_path(state)
+    local ok, err = api.userfs.write(path, state.body)
     if not ok then
         state.error = err or "SaveFailed"
         state.message = nil
         return false
     end
-    ok, err = api.fs.write(DOC_FILE, state.body)
-    if not ok then
-        state.error = err or "SaveFailed"
-        state.message = nil
-        return false
+    state.file_path = path
+    state.file_name = basename(path)
+    state.title = state.title ~= "" and state.title or title_from_name(state.file_name)
+    if api.fs and api.fs.write then
+        api.fs.write(LAST_FILE, path)
     end
     state.error = nil
-    state.message = "Saved"
+    state.message = "Saved " .. state.file_name
     return true
 end
 
 local function print_doc(state)
-    save_doc(state)
-    if state.error then
+    if not save_doc(state) then
         return false
     end
     if not api.printer or not api.printer.print then
@@ -80,8 +173,9 @@ local function print_doc(state)
         state.message = nil
         return false
     end
-    local ok, result = api.printer.print(state.body, {
-        title = state.title,
+    local printable = (state.title ~= "" and (state.title .. "\n\n") or "") .. state.body
+    local ok, result = api.printer.print(printable, {
+        title = state.title ~= "" and state.title or state.file_name,
     })
     if ok then
         state.error = nil
@@ -94,6 +188,8 @@ local function print_doc(state)
 end
 
 local function new_doc(state)
+    state.file_path = nil
+    state.file_name = "Untitled.txt"
     state.title = "Untitled"
     state.body = ""
     state.scroll = 0
@@ -103,7 +199,12 @@ local function new_doc(state)
 end
 
 local function append_char(state, ch)
-    if state.focus == "title" then
+    if state.focus == "name" then
+        if #state.file_name < 48 then
+            state.file_name = state.file_name .. ch
+            state.file_path = nil
+        end
+    elseif state.focus == "title" then
         if #state.title < 48 then
             state.title = state.title .. ch
         end
@@ -115,7 +216,10 @@ local function append_char(state, ch)
 end
 
 local function backspace(state)
-    if state.focus == "title" then
+    if state.focus == "name" then
+        state.file_name = state.file_name:sub(1, math.max(0, #state.file_name - 1))
+        state.file_path = nil
+    elseif state.focus == "title" then
         state.title = state.title:sub(1, math.max(0, #state.title - 1))
     else
         state.body = state.body:sub(1, math.max(0, #state.body - 1))
@@ -124,30 +228,95 @@ local function backspace(state)
     state.error = nil
 end
 
-local function wrapped_body(width, body)
-    if api.screen.wrap then
-        return api.screen.wrap(body, math.max(1, width))
+local function picker_entries(state)
+    local list, err
+    if api.userfs and api.userfs.list then
+        list, err = api.userfs.list(state.picker_path or "/")
+    else
+        err = "UserFSUnavailable"
     end
-    return { tostring(body or "") }
+    if not list then
+        state.error = err or "ListFailed"
+        return {}
+    end
+    local entries = {}
+    for _, name in ipairs(list) do
+        local path = combine(state.picker_path, name)
+        local stat = api.userfs.stat(path) or { kind = "file" }
+        if stat.kind == "dir" or name:lower():match("%.txt$") then
+            entries[#entries + 1] = {
+                name = name,
+                path = path,
+                kind = stat.kind,
+            }
+        end
+    end
+    table.sort(entries, function(a, b)
+        if a.kind ~= b.kind then
+            return a.kind == "dir"
+        end
+        return tostring(a.name):lower() < tostring(b.name):lower()
+    end)
+    return entries
+end
+
+local function render_picker(ctx, state)
+    local y = 2
+    local h = math.max(5, ctx.height - 3)
+    api.screen.rect(ctx.x, ctx.y + y, ctx.width, h, C.gray)
+    write(ctx, 1, y, "Open .txt", C.white, C.gray)
+    button(ctx, "word_pick_close", math.max(1, ctx.width - 7), y, 7, "Cancel", C.red)
+    button(ctx, "word_pick_up", 1, y + 2, 4, "Up", C.gray)
+    write(ctx, 6, y + 2, truncate(state.picker_path or "/", math.max(1, ctx.width - 6)), C.white, C.gray)
+
+    local entries = picker_entries(state)
+    state.picker_entries = entries
+    local rows_y = y + 4
+    local rows_h = math.max(1, h - 4)
+    local max_scroll = math.max(0, #entries - rows_h)
+    state.picker_scroll = math.min(math.max(0, state.picker_scroll or 0), max_scroll)
+    for row = 0, rows_h - 1 do
+        local entry = entries[state.picker_scroll + row + 1]
+        local row_y = rows_y + row
+        api.screen.write(ctx.x + 1, ctx.y + row_y, string.rep(" ", math.max(1, ctx.width - 2)), C.white, C.black)
+        if entry then
+            local label = (entry.kind == "dir" and "[ ] " or "    ") .. entry.name
+            ctx.buttons["word_pick_row_" .. tostring(row + 1)] = api.screen.button("word_pick_row_" .. tostring(row + 1), ctx.x + 1, ctx.y + row_y, math.max(1, ctx.width - 2), "", { fg = C.white, bg = C.black })
+            write(ctx, 1, row_y, truncate(label, math.max(1, ctx.width - 2)), entry.kind == "dir" and C.yellow or C.white, C.black)
+        end
+    end
+end
+
+function app.on_resume(ctx)
+    local state = ctx.state
+    ensure_state(state)
+    local path = ctx.open_file or (ctx.launch and ctx.launch.open_file)
+    if path and path ~= state.last_open_request then
+        state.last_open_request = path
+        load_path(state, path)
+    end
 end
 
 function app.render(ctx)
     local state = ctx.state
     ensure_state(state)
 
-    local toolbar_y = 0
-    button(ctx, "word_new", 0, toolbar_y, 5, "New", C.gray)
-    button(ctx, "word_save", 6, toolbar_y, 6, "Save", C.blue)
-    button(ctx, "word_print", 13, toolbar_y, 7, "Print", C.green)
+    button(ctx, "word_new", 0, 0, 5, "New", C.gray)
+    button(ctx, "word_open", 6, 0, 6, "Open", C.gray)
+    button(ctx, "word_save", 13, 0, 6, "Save", C.blue)
+    button(ctx, "word_print", 20, 0, 7, "Print", C.green)
     local status = state.error or state.message or ""
-    local status_color = state.error and C.red or C.lightGray
-    write(ctx, 22, toolbar_y, truncate(status, math.max(1, ctx.width - 22)), status_color, C.black)
+    write(ctx, 28, 0, truncate(status, math.max(1, ctx.width - 28)), state.error and C.red or C.lightGray, C.black)
+
+    local name_bg = state.focus == "name" and C.blue or C.gray
+    api.screen.write(ctx.x, ctx.y + 2, string.rep(" ", ctx.width), C.white, name_bg)
+    write(ctx, 0, 2, truncate("File: " .. safe_file_name(state.file_name), ctx.width), C.white, name_bg)
 
     local title_bg = state.focus == "title" and C.blue or C.gray
-    api.screen.write(ctx.x, ctx.y + 2, string.rep(" ", ctx.width), C.white, title_bg)
-    write(ctx, 0, 2, truncate(state.title == "" and "Untitled" or state.title, ctx.width), C.white, title_bg)
+    api.screen.write(ctx.x, ctx.y + 3, string.rep(" ", ctx.width), C.white, title_bg)
+    write(ctx, 0, 3, truncate("Title: " .. (state.title == "" and "Untitled" or state.title), ctx.width), C.white, title_bg)
 
-    local editor_y = 4
+    local editor_y = 5
     local editor_h = math.max(1, ctx.height - editor_y)
     local body_w = math.max(1, ctx.width)
     local lines = wrapped_body(body_w, state.body)
@@ -166,17 +335,56 @@ function app.render(ctx)
     if state.body == "" then
         write(ctx, 0, editor_y, state.focus == "body" and "_" or "", C.lightGray, C.black)
     end
+    if state.picker then
+        render_picker(ctx, state)
+    end
 end
 
 function app.on_touch(ctx)
     local state = ctx.state
     ensure_state(state)
     if ctx.event and ctx.event.type == "scroll" then
-        state.scroll = math.max(0, (state.scroll or 0) + tonumber(ctx.event.direction or 0))
+        if state.picker then
+            state.picker_scroll = math.max(0, (state.picker_scroll or 0) + tonumber(ctx.event.direction or 0))
+        else
+            state.scroll = math.max(0, (state.scroll or 0) + tonumber(ctx.event.direction or 0))
+        end
+        return true
+    end
+    if state.picker then
+        if ctx.button_id == "word_pick_close" then
+            state.picker = false
+            return true
+        elseif ctx.button_id == "word_pick_up" then
+            state.picker_path = parent(state.picker_path)
+            state.picker_scroll = 0
+            return true
+        elseif tostring(ctx.button_id or ""):match("^word_pick_row_") then
+            local row = tonumber(tostring(ctx.button_id):match("(%d+)$")) or 0
+            local entry = (state.picker_entries or {})[(state.picker_scroll or 0) + row]
+            if entry then
+                if entry.kind == "dir" then
+                    state.picker_path = entry.path
+                    state.picker_scroll = 0
+                else
+                    load_path(state, entry.path)
+                    state.picker = false
+                end
+            end
+            return true
+        end
         return true
     end
     if ctx.button_id == "word_new" then
         new_doc(state)
+        return true
+    elseif ctx.button_id == "word_open" then
+        state.picker = true
+        state.picker_path = "/Documents"
+        if api.userfs and api.userfs.exists and not api.userfs.exists(state.picker_path) then
+            state.picker_path = "/"
+        end
+        state.picker_scroll = 0
         return true
     elseif ctx.button_id == "word_save" then
         save_doc(state)
@@ -185,6 +393,9 @@ function app.on_touch(ctx)
         print_doc(state)
         return true
     elseif ctx.event and ctx.event.y == ctx.y + 2 then
+        state.focus = "name"
+        return true
+    elseif ctx.event and ctx.event.y == ctx.y + 3 then
         state.focus = "title"
         return true
     elseif ctx.event then
@@ -199,6 +410,9 @@ function app.on_key(ctx)
     ensure_state(state)
     local event = ctx.event or {}
     if event.type == "char" then
+        if state.picker then
+            return true
+        end
         append_char(state, event.raw and event.raw[2] or "")
         return true
     elseif event.type ~= "key" or not keys then
@@ -206,21 +420,44 @@ function app.on_key(ctx)
     end
 
     local key = event.raw and event.raw[2]
+    if state.picker then
+        if key == keys.backspace then
+            state.picker_path = parent(state.picker_path)
+            state.picker_scroll = 0
+        elseif key == keys.enter then
+            state.picker = false
+        elseif key == keys.up then
+            state.picker_scroll = math.max(0, (state.picker_scroll or 0) - 1)
+        elseif key == keys.down then
+            state.picker_scroll = (state.picker_scroll or 0) + 1
+        end
+        return true
+    end
     if key == keys.backspace then
         backspace(state)
         return true
     elseif key == keys.enter then
-        if state.focus == "title" then
+        if state.focus == "name" then
+            state.file_name = safe_file_name(state.file_name)
+            state.file_path = nil
+            state.focus = "title"
+        elseif state.focus == "title" then
             state.focus = "body"
         elseif #state.body < MAX_BODY then
             state.body = state.body .. "\n"
         end
         return true
     elseif keys.tab and key == keys.tab then
-        state.focus = state.focus == "title" and "body" or "title"
+        if state.focus == "name" then
+            state.focus = "title"
+        elseif state.focus == "title" then
+            state.focus = "body"
+        else
+            state.focus = "name"
+        end
         return true
     elseif keys.f2 and key == keys.f2 then
-        state.focus = "title"
+        state.focus = "name"
         return true
     elseif keys.f3 and key == keys.f3 then
         save_doc(state)

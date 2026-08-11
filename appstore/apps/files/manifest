@@ -1,0 +1,11 @@
+{
+  title = "File Explorer",
+  id = "files",
+  label = "Files",
+  author = "Tesserac",
+  description = "Desktop UserFS browser with app handoff for supported files.",
+  refresh_rate = 12,
+  render_mode = "window",
+  version = "1.0.0",
+  devices = { "TDesktop", "TBusinessDesktop" },
+}
