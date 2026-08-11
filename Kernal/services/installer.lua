@@ -17,16 +17,19 @@ local SOURCE_PROFILES = {
         source = "installer/hypercube_phone",
         os = "HyperCubeDesktop",
         device = "TDesktop",
+        bootstrap = true,
     },
     business_desktop = {
         source = "installer/hypercube_phone",
         os = "HyperCubeDesktop",
         device = "TBusinessDesktop",
+        bootstrap = true,
     },
     user_server = {
         source = "installer/user_server",
         os = "HyperCubeUserServer",
         device = "UserServer",
+        bootstrap = true,
     },
 }
 local INSTALL_PATHS = {
@@ -600,10 +603,16 @@ end
 ]]
 end
 
-local function user_server_shim_source()
+local function network_bootstrap_shim_source(profile)
+    profile = profile or SOURCE_PROFILES.user_server
+    local device = tostring(profile.device or "UserServer")
+    local os_name = tostring(profile.os or "HyperCube")
+    local title = tostring(profile.title or os_name .. " installer")
     return [[
 local PROTOCOL = "tesserac"
-local DEVICE = "UserServer"
+local DEVICE = "]] .. device .. [["
+local OS_NAME = "]] .. os_name .. [["
+local INSTALLER_TITLE = "]] .. title .. [["
 local SERVER_HOSTS = {
     "HyperCubeServer",
     "TesseracServer",
@@ -768,7 +777,7 @@ local function install_package(package, rom_data)
         version = package.version,
         packed_files = package.packed_files,
         rom_checksum = package.rom_checksum,
-        installer = "user_server_shim",
+        installer = "network_bootstrap_shim",
     }), false)
     if not ok then
         return false, err
@@ -778,7 +787,7 @@ end
 
 term.clear()
 term.setCursorPos(1, 1)
-print("HyperCube User Server installer")
+print(INSTALLER_TITLE)
 print("")
 
 local server_id, discover_err = discover_server()
@@ -791,6 +800,7 @@ print("Requesting package...")
 
 local package, download_err = request(server_id, {
     type = "update.download",
+    os = OS_NAME,
     device = DEVICE,
     version = "",
 }, "update.download.result", 12)
@@ -810,6 +820,7 @@ for index = 1, chunks do
     print("Chunk " .. tostring(index) .. "/" .. tostring(chunks))
     local chunk, chunk_err = request(server_id, {
         type = "update.chunk",
+        os = OS_NAME,
         device = DEVICE,
         index = index,
     }, "update.chunk.result", 12)
@@ -831,6 +842,10 @@ print("")
 print("Install complete.")
 print("Remove this disk and reboot the computer.")
 ]]
+end
+
+local function user_server_shim_source()
+    return network_bootstrap_shim_source(SOURCE_PROFILES.user_server)
 end
 
 local function clean_target(mount)
@@ -925,8 +940,9 @@ function installer.new(options)
 
     function self:build_rom(target_mount)
         local profile = self:source_profile()
-        if profile.device == "UserServer" then
-            local ok, err = write_all(combine(target_mount, "startup.lua"), user_server_shim_source(), false)
+        if profile.bootstrap == true then
+            local shim = network_bootstrap_shim_source(profile)
+            local ok, err = write_all(combine(target_mount, "startup.lua"), shim, false)
             if not ok then
                 return false, err
             end
@@ -934,7 +950,7 @@ function installer.new(options)
                 file_count = 1,
                 mode = "shim",
                 device = profile.device,
-                checksum = checksum(user_server_shim_source()),
+                checksum = checksum(shim),
             }
         end
         local blob, file_count_or_err = build_rom_blob(self.source, profile)

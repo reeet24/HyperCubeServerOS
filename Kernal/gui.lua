@@ -299,7 +299,7 @@ local function draw_installer(screen, hypercube, state, width, y, height)
         else
             add_text("Install failed: " .. tostring(result.error), C.red)
         end
-    elseif source_profile.device == "UserServer" then
+    elseif source_profile.bootstrap == true then
         add_text("Installs a small network bootstrap floppy.", C.lightGray)
     else
         add_text("Installs startup.lua + obfuscated HyperCube ROM.", C.lightGray)

@@ -184,6 +184,8 @@ ROM builds inherit the server `Kernal/` first, then overlay distro-specific file
 
 The desktop profiles reuse the phone app runtime and appstore package format, but boot with a MacOS-style desktop shell, menu bar, bottom dock, and window chrome. Business desktop uses the business device identity for future business-only features.
 
+`desktop`, `business_desktop`, and `user_server` install as network bootstrap floppies. Boot the target computer from the floppy once; the shim downloads the full ROM from the main server, writes it to the target computer, then the disk can be removed before reboot. This avoids filling the floppy with the full app/runtime image.
+
 Installed media includes:
 
 - `hypercube.rom`: Encrypted packed ROM image.
