@@ -839,6 +839,16 @@ local function make_desktop_api(tphone, app_id)
             }
             return true
         end,
+        open_app = function(id)
+            if not is_desktop_device(tphone) then
+                return false, "DesktopRequired"
+            end
+            tphone.shell_request = {
+                type = "open_app",
+                app_id = tostring(id or ""),
+            }
+            return true
+        end,
         minimize = function()
             return request("minimize")
         end,
@@ -864,6 +874,22 @@ local function make_desktop_api(tphone, app_id)
                 x = tonumber(options.x),
                 y = tonumber(options.y),
                 data = type(options.data) == "table" and options.data or {},
+            })
+        end,
+        open_terminal = function(options)
+            options = type(options) == "table" and options or {}
+            if tphone.dev_mode ~= true then
+                return false, "DevModeRequired"
+            end
+            return request("open_popup", {
+                kind = "terminal",
+                title = tostring(options.title or "Terminal"),
+                width = tonumber(options.width) or 42,
+                height = tonumber(options.height) or 12,
+                data = {
+                    command = tostring(options.command or ""),
+                    cwd = tostring(options.cwd or "/"),
+                },
             })
         end,
     }
@@ -915,6 +941,173 @@ local function make_dev_api(tphone)
             result = "ok"
         end
         return true, tostring(result)
+    end
+
+    local function sandbox_env(app_id, output, root)
+        local api_ref = hcapi.create(tphone, app_id or "terminal")
+        local module_cache = {}
+        root = normalize_path(root or "/")
+        local env
+        local function app_require(name)
+            name = tostring(name or ""):gsub("%.", "/")
+            local path = normalize_path(root .. "/" .. name .. ".lua")
+            if module_cache[path] ~= nil then
+                return module_cache[path]
+            end
+            local source, read_err = tphone.hcfs:read(path)
+            if not source then
+                error(read_err or ("ModuleNotFound:" .. tostring(name)), 2)
+            end
+            local loader, load_err = load(source, "@" .. path, "t", env)
+            if not loader then
+                error(load_err or "ModuleLoadFailed", 2)
+            end
+            module_cache[path] = true
+            local ok, result = pcall(loader)
+            if not ok then
+                module_cache[path] = nil
+                error(result, 2)
+            end
+            if result ~= nil then
+                module_cache[path] = result
+            end
+            return module_cache[path]
+        end
+        env = {
+            _G = nil,
+            HCAPI = api_ref,
+            api = api_ref,
+            require = app_require,
+            assert = assert,
+            error = error,
+            ipairs = ipairs,
+            next = next,
+            pairs = pairs,
+            pcall = pcall,
+            select = select,
+            tonumber = tonumber,
+            tostring = tostring,
+            type = type,
+            unpack = unpack or table.unpack,
+            math = math,
+            string = string,
+            table = table,
+            coroutine = {
+                create = coroutine.create,
+                resume = coroutine.resume,
+                running = coroutine.running,
+                status = coroutine.status,
+                wrap = coroutine.wrap,
+                yield = coroutine.yield,
+            },
+            os = {
+                clock = os.clock,
+                time = os.time,
+                date = os.date,
+                epoch = os.epoch,
+            },
+            colors = colors,
+            colours = colours,
+            keys = keys,
+            textutils = textutils,
+            print = function(...)
+                local parts = {}
+                for i = 1, select("#", ...) do
+                    parts[#parts + 1] = tostring(select(i, ...))
+                end
+                output[#output + 1] = table.concat(parts, " ")
+            end,
+        }
+        env._G = env
+        return env
+    end
+
+    local function sandbox_run(source, options)
+        if not enabled() then
+            return false, "DevModeRequired"
+        end
+        source = tostring(source or "")
+        options = type(options) == "table" and options or {}
+        local output = {}
+        local env = sandbox_env(options.app_id or "terminal", output, options.root)
+        local name = tostring(options.name or "terminal")
+        local loader, err = load("return " .. source, name, "t", env)
+        if not loader then
+            loader, err = load(source, name, "t", env)
+        end
+        if not loader then
+            return false, err
+        end
+        local ok, result = pcall(loader)
+        if not ok then
+            return false, result
+        end
+        if result ~= nil then
+            if type(result) == "table" and textutils and textutils.serialize then
+                result = textutils.serialize(result)
+            end
+            output[#output + 1] = tostring(result)
+        end
+        return true, table.concat(output, "\n")
+    end
+
+    local function run_user_file(path, options)
+        if not tphone.hcfs then
+            tphone.hcfs = UserFS.new(tphone.identity or {})
+        end
+        local source, err = tphone.hcfs:read(path)
+        if not source then
+            return false, err
+        end
+        options = type(options) == "table" and options or {}
+        options.name = "@" .. tostring(path or "")
+        options.root = tostring(path or ""):match("^(.*)/[^/]+$") or "/"
+        return sandbox_run(source, options)
+    end
+
+    local function lint(source)
+        if not enabled() then
+            return false, "DevModeRequired"
+        end
+        source = tostring(source or "")
+        local diagnostics = {}
+        local loader, err = load(source, "lint", "t", {})
+        if not loader then
+            diagnostics[#diagnostics + 1] = {
+                severity = "error",
+                message = tostring(err or "SyntaxError"),
+            }
+        end
+        if source:find("os%.shutdown", 1, false) or source:find("fs%.delete", 1, false) then
+            diagnostics[#diagnostics + 1] = {
+                severity = "warning",
+                message = "Direct OS/filesystem calls are not available in user-app sandbox; use HCAPI.",
+            }
+        end
+        if not source:find("return%s+app") and not source:find("return%s+{") then
+            diagnostics[#diagnostics + 1] = {
+                severity = "hint",
+                message = "User apps should return an app table.",
+            }
+        end
+        return true, diagnostics
+    end
+
+    local function completions(prefix)
+        prefix = tostring(prefix or "")
+        local words = {
+            "HCAPI.screen.write", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.wrap",
+            "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.userfs.read", "HCAPI.userfs.write",
+            "HCAPI.desktop.open_popup", "HCAPI.desktop.open_terminal", "HCAPI.desktop.open_file",
+            "HCAPI.bank.purchase", "HCAPI.phone.send", "app.render", "app.on_key", "app.on_touch", "app.on_tick",
+        }
+        local out = {}
+        for _, word in ipairs(words) do
+            if prefix == "" or word:sub(1, #prefix) == prefix then
+                out[#out + 1] = word
+            end
+        end
+        return out
     end
 
     local function http_get(url, accept)
@@ -984,6 +1177,10 @@ local function make_dev_api(tphone)
         is_enabled = enabled,
         enable = enable,
         eval = eval,
+        sandbox_run = sandbox_run,
+        run_user_file = run_user_file,
+        lint = lint,
+        completions = completions,
         http_get = http_get,
         decode_table = decode_table,
         decode_json = decode_json,

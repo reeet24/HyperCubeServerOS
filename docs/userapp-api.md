@@ -498,9 +498,15 @@ The terminal app and dev helpers require phone dev mode.
 - `api.dev.is_enabled()`
 - `api.dev.enable()`
 - `api.dev.eval(source)`
+- `api.dev.sandbox_run(source, options)`: run Lua with the same restricted user-app style environment used by Terminal.
+- `api.dev.run_user_file(path, options)`: run a Lua file from desktop UserFS.
+- `api.dev.lint(source)`: return syntax diagnostics and sandbox hints.
+- `api.dev.completions(prefix)`: return completion candidates for SDK/editor UIs.
 - `api.dev.http_get(url, accept)`
 - `api.dev.decode_table(text)`
 - `api.dev.decode_json(text)`
+
+Desktop apps can request an embedded development terminal popup with `api.desktop.open_terminal(options)` while dev mode is active. Terminal supports `lua`, `run`, `appnew`, `applint`, `appinstalllocal`, and `apprun` for local UserFS app development.
 
 Dev mode is intended for trusted development phones only. Do not expose dev-mode workflows to normal users.
 

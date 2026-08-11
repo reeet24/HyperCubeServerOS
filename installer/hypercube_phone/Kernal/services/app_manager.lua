@@ -399,6 +399,7 @@ local function safe_env(api, app_dir)
         colors = colors,
         colours = colours,
         keys = keys,
+        textutils = textutils,
     }
     env._G = env
     return env

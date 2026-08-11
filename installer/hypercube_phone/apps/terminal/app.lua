@@ -82,6 +82,20 @@ local function safe_app_id(id)
     return id
 end
 
+local function safe_user_path(path)
+    path = normalize_path(path)
+    if path == "" then
+        return nil
+    end
+    if path:sub(1, 1) ~= "/" then
+        path = "/" .. path
+    end
+    if path:find("..", 1, true) then
+        return nil
+    end
+    return path
+end
+
 local function id_from_path(path)
     path = normalize_path(path)
     local leaf = path:match("([^/]+)/?$") or "devapp"
@@ -156,6 +170,245 @@ local function install_package(state, package)
         push(state, "Installed " .. tostring(result.id) .. " (" .. tostring(result.files or 1) .. " files)")
     else
         push(state, tostring(result or "InstallFailed"))
+    end
+end
+
+local function userfs_read(path)
+    if not api.userfs or not api.userfs.read then
+        return nil, "UserFSUnavailable"
+    end
+    path = safe_user_path(path)
+    if not path then
+        return nil, "InvalidPath"
+    end
+    return api.userfs.read(path)
+end
+
+local function userfs_write(path, data)
+    if not api.userfs or not api.userfs.write then
+        return false, "UserFSUnavailable"
+    end
+    path = safe_user_path(path)
+    if not path then
+        return false, "InvalidPath"
+    end
+    return api.userfs.write(path, data)
+end
+
+local function userfs_list(path)
+    if not api.userfs or not api.userfs.list then
+        return nil, "UserFSUnavailable"
+    end
+    path = safe_user_path(path or "/")
+    if not path then
+        return nil, "InvalidPath"
+    end
+    return api.userfs.list(path)
+end
+
+local function lint_source(state, source)
+    if not api.dev or not api.dev.lint then
+        push(state, "LintUnavailable")
+        return false
+    end
+    local ok, diagnostics = api.dev.lint(source)
+    if not ok then
+        push(state, tostring(diagnostics))
+        return false
+    end
+    if #diagnostics == 0 then
+        push(state, "lint ok")
+        return true
+    end
+    for _, item in ipairs(diagnostics) do
+        push(state, tostring(item.severity or "info") .. ": " .. tostring(item.message or ""))
+    end
+    return false
+end
+
+local function collect_user_app_files(root, relative, files)
+    if #files > 128 then
+        return false, "TooManyFiles"
+    end
+    local path = root
+    if relative and relative ~= "" then
+        path = root:gsub("/+$", "") .. "/" .. relative
+    end
+    local listing = userfs_list(path)
+    if type(listing) == "table" then
+        for _, child in ipairs(listing) do
+            local child_relative = relative == "" and child or (relative .. "/" .. child)
+            local ok, err = collect_user_app_files(root, child_relative, files)
+            if not ok then
+                return false, err
+            end
+        end
+        return true
+    end
+    local data, err = userfs_read(path)
+    if data == nil then
+        return false, err
+    end
+    if relative ~= "manifest" then
+        files[#files + 1] = {
+            path = relative,
+            data = data,
+        }
+    end
+    return true
+end
+
+local function read_manifest_from_userfs(root, fallback_id)
+    local data = userfs_read(root:gsub("/+$", "") .. "/manifest")
+    local manifest = data and decode_lua_table(data) or nil
+    if type(manifest) ~= "table" then
+        manifest = {
+            id = fallback_id,
+            title = fallback_id,
+            version = "dev",
+            devices = { "TDesktop", "TBusinessDesktop" },
+        }
+    end
+    manifest.id = safe_app_id(manifest.id or fallback_id)
+    return manifest
+end
+
+local function package_user_app(root, fallback_id)
+    root = safe_user_path(root)
+    if not root then
+        return nil, "InvalidPath"
+    end
+    local id = safe_app_id(fallback_id or id_from_path(root))
+    local manifest = read_manifest_from_userfs(root, id)
+    if not manifest.id then
+        return nil, "InvalidAppId"
+    end
+    local files = {}
+    local ok, err = collect_user_app_files(root, "", files)
+    if not ok then
+        return nil, err
+    end
+    local has_app = false
+    for _, file in ipairs(files) do
+        if file.path == "app.lua" then
+            has_app = true
+            break
+        end
+    end
+    if not has_app then
+        return nil, "EntrypointRequired"
+    end
+    manifest.files = files
+    return manifest
+end
+
+local function scaffold_app(state, args)
+    local id = safe_app_id(args[2])
+    if not id then
+        push(state, "Usage: appnew <app_id>")
+        return
+    end
+    local root = "/dev/apps/" .. id
+    if api.userfs and api.userfs.mkdir then
+        api.userfs.mkdir("/dev")
+        api.userfs.mkdir("/dev/apps")
+        api.userfs.mkdir(root)
+    end
+    userfs_write(root .. "/manifest", textutils.serialize({
+        id = id,
+        title = id,
+        label = id:sub(1, 4),
+        version = "0.1.0",
+        devices = { "TDesktop", "TBusinessDesktop" },
+        refresh_rate = 10,
+    }))
+    userfs_write(root .. "/app.lua", [[local api = HCAPI
+local C = api.colors
+
+local app = {
+    manifest = {
+        title = "]] .. id .. [[",
+        label = "]] .. id:sub(1, 4) .. [[",
+        devices = { "TDesktop", "TBusinessDesktop" },
+        refresh_rate = 10,
+    },
+}
+
+function app.render(ctx)
+    api.screen.rect(ctx.x, ctx.y, ctx.width, ctx.height, C.black)
+    api.screen.write(ctx.x + 1, ctx.y + 1, "Hello from ]] .. id .. [[", C.yellow, C.black)
+end
+
+return app
+]])
+    push(state, "Created " .. root)
+end
+
+local function install_local_app(state, args, run_after)
+    local root = args[2]
+    local app_id = args[3]
+    if not root then
+        push(state, "Usage: appinstalllocal <userfs_dir> [app_id]")
+        return
+    end
+    local package, err = package_user_app(root, app_id)
+    if not package then
+        push(state, tostring(err))
+        return
+    end
+    for _, file in ipairs(package.files or {}) do
+        if file.path == "app.lua" then
+            lint_source(state, file.data)
+            break
+        end
+    end
+    install_package(state, package)
+    if run_after and api.desktop and api.desktop.open_app then
+        api.desktop.open_app(package.id)
+        push(state, "Opening " .. tostring(package.id))
+    end
+end
+
+local function run_lua(state, source)
+    if not api.dev or not api.dev.sandbox_run then
+        push(state, "SandboxRunUnavailable")
+        return
+    end
+    local ok, result = api.dev.sandbox_run(source, { app_id = "terminal" })
+    if ok then
+        if tostring(result or "") ~= "" then
+            for line in (tostring(result) .. "\n"):gmatch("(.-)\n") do
+                push(state, "= " .. line)
+            end
+        else
+            push(state, "= ok")
+        end
+    else
+        push(state, "! " .. tostring(result))
+    end
+end
+
+local function run_lua_file(state, args)
+    local path = args[2]
+    if not path then
+        push(state, "Usage: run <userfs_lua_path>")
+        return
+    end
+    if not api.dev or not api.dev.run_user_file then
+        push(state, "RunFileUnavailable")
+        return
+    end
+    local ok, result = api.dev.run_user_file(path, { app_id = "terminal" })
+    if ok then
+        if tostring(result or "") ~= "" then
+            for line in (tostring(result) .. "\n"):gmatch("(.-)\n") do
+                push(state, "= " .. line)
+            end
+        else
+            push(state, "= ok")
+        end
+    else
+        push(state, "! " .. tostring(result))
     end
 end
 
@@ -321,10 +574,12 @@ local function run_command(state, command)
     if command == "" then
         return
     elseif command == "help" then
-        push(state, "help clear id net reboot")
+        push(state, "help clear id net reboot ls cat")
+        push(state, "lua <expr/code> | run <userfs.lua>")
+        push(state, "appnew <id> | applint <file>")
+        push(state, "appinstalllocal <dir> [id] | apprun <dir> [id]")
         push(state, "appinstall pastebin <id> [app_id]")
         push(state, "appinstall github <owner/repo> <path> [branch] [app_id]")
-        push(state, "lua <expr/code>")
     elseif command == "clear" then
         state.lines = {}
     elseif command == "id" then
@@ -343,12 +598,32 @@ local function run_command(state, command)
             push(state, "RebootUnavailable")
         end
     elseif command:sub(1, 4) == "lua " then
-        if not api.dev or not api.dev.eval then
-            push(state, "DevEvalUnavailable")
-            return
+        run_lua(state, command:sub(5))
+    elseif command:sub(1, 4) == "run " then
+        run_lua_file(state, split_args(command))
+    elseif command:sub(1, 3) == "ls " or command == "ls" then
+        local list, err = userfs_list(split_args(command)[2] or "/")
+        if not list then
+            push(state, tostring(err))
+        else
+            push(state, table.concat(list, "  "))
         end
-        local ok, result = api.dev.eval(command:sub(5))
-        push(state, (ok and "= " or "! ") .. tostring(result))
+    elseif command:sub(1, 4) == "cat " then
+        local data, err = userfs_read(split_args(command)[2])
+        push(state, data or tostring(err))
+    elseif command:sub(1, 7) == "appnew " then
+        scaffold_app(state, split_args(command))
+    elseif command:sub(1, 8) == "applint " then
+        local source, err = userfs_read(split_args(command)[2])
+        if source then
+            lint_source(state, source)
+        else
+            push(state, tostring(err))
+        end
+    elseif command:sub(1, 16) == "appinstalllocal " then
+        install_local_app(state, split_args(command), false)
+    elseif command:sub(1, 7) == "apprun " then
+        install_local_app(state, split_args(command), true)
     elseif command:sub(1, 11) == "appinstall " then
         install_remote_app(state, command)
     else
@@ -374,6 +649,12 @@ function app.render(ctx)
     local prompt = "> " .. tostring(state.input or "")
     api.screen.write(ctx.x, ctx.y + ctx.height - 1, string.rep(" ", ctx.width), C.white, C.black)
     api.screen.write(ctx.x, ctx.y + ctx.height - 1, prompt:sub(1, ctx.width), C.white, C.black)
+    if state.suggestions and #state.suggestions > 0 and ctx.height > 4 then
+        local y = ctx.y + ctx.height - math.min(5, #state.suggestions + 1) - 1
+        for i = 1, math.min(4, #state.suggestions) do
+            api.screen.write(ctx.x, y + i - 1, tostring(state.suggestions[i]):sub(1, ctx.width), C.black, C.lightGray)
+        end
+    end
 end
 
 function app.on_key(ctx)
@@ -408,7 +689,19 @@ function app.on_key(ctx)
     elseif key == keys.enter then
         local command = state.input
         state.input = ""
+        state.suggestions = nil
         run_command(state, command)
+        return true
+    elseif key == keys.tab then
+        local prefix = state.input:match("([%w_%.:]+)$") or state.input
+        local suggestions = {}
+        if api.dev and api.dev.completions then
+            suggestions = api.dev.completions(prefix)
+        end
+        state.suggestions = suggestions
+        if #suggestions == 1 then
+            state.input = state.input:gsub("([%w_%.:]+)$", suggestions[1])
+        end
         return true
     end
     return false

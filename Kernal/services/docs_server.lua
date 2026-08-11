@@ -7,6 +7,7 @@ local MAX_RESULTS = 25
 
 local DOCS = {
     { id = "userapp-api", title = "User App API", file = "userapp-api.md", summary = "Phone user-app lifecycle, UI, storage, network, appstore, and dev-mode APIs." },
+    { id = "desktop-sdk", title = "Desktop SDK", file = "desktop-sdk.md", summary = "Official desktop user-app SDK, terminal workflow, linting, completion, and embedded terminal tools." },
     { id = "web-api", title = "Web API", file = "web-api.md", summary = "HyperNet web publishing, routed origins, HCTML, and moderation web routes." },
     { id = "web-api-examples", title = "Web API Examples", file = "web-api-examples.md", summary = "Copyable examples for publishing pages and serving routed origins." },
     { id = "banking-api", title = "Banking API", file = "banking-api.md", summary = "Bank accounts, purchases, deposits, withdrawals, escrow, and integration patterns." },
