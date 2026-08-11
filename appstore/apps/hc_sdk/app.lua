@@ -778,7 +778,9 @@ end
 
 local function draw_file_sidebar(ctx, state, y)
     local width = state.sidebar_open and math.min(18, math.max(10, math.floor(ctx.width * 0.32))) or 3
-    api.screen.rect(ctx.x, y, width, math.max(1, ctx.height - (y - ctx.y)), C.gray)
+    local bottom = ctx.y + ctx.height - 1
+    local sidebar_height = math.max(1, bottom - y + 1)
+    api.screen.rect(ctx.x, y, width, sidebar_height, C.gray)
     ctx.buttons.sidebar_toggle = api.screen.button("sidebar_toggle", ctx.x, y, 3, state.sidebar_open and "<<" or ">>", { fg = C.white, bg = C.blue })
     if not state.sidebar_open then
         return width + 1
@@ -789,7 +791,7 @@ local function draw_file_sidebar(ctx, state, y)
     ctx.buttons.new_file = api.screen.button("new_file", ctx.x + 12, y, math.max(1, math.min(5, width - 12)), "+", { fg = C.white, bg = C.green })
 
     local row = y + 2
-    local visible = math.max(1, ctx.y + ctx.height - row)
+    local visible = math.max(0, bottom - row + 1)
     state.files_scroll = clamp_scroll(state.files_scroll, #(state.files or {}), visible)
     local first = (state.files_scroll or 0) + 1
     for i = first, math.min(#(state.files or {}), first + visible - 1) do
@@ -960,12 +962,14 @@ local function draw_editor(ctx, state, y)
     local status = issue and (tostring(issue.severity) .. ": " .. tostring(issue.message)) or "No diagnostics"
     api.screen.write(ctx.x + 10, y + 1, truncate(status, math.max(1, ctx.width - 10)), issue and C.orange or C.green, C.black)
     local lines = visual_lines_for(state.source or "", math.max(1, ctx.width - 1))
-    local max_rows = math.max(1, ctx.height - 5)
+    local first_row = y + 3
+    local bottom = ctx.y + ctx.height - 1
+    local max_rows = math.max(0, bottom - first_row + 1)
     state.edit_scroll = clamp_scroll(state.edit_scroll, #lines, max_rows)
     local first = math.max(1, (state.edit_scroll or 0) + 1)
     state.editor_layout = {
         x = ctx.x,
-        y = y + 3,
+        y = first_row,
         width = ctx.width,
         height = max_rows,
         first = first,
