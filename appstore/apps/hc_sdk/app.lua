@@ -6,7 +6,7 @@ local app = {
         title = "HyperCube SDK",
         label = "SDK",
         devices = { "TDesktop", "TBusinessDesktop" },
-        refresh_rate = 12,
+        refresh_rate = 15,
     },
 }
 
