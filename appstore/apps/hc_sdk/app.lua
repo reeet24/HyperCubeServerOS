@@ -945,7 +945,8 @@ local function draw_code_line(ctx, y, line, state, diagnostics)
     local cursor = tonumber(state.cursor or 0) or 0
     local line_start = tonumber(line.start or 0) or 0
     local line_finish = tonumber(line.finish or line_start) or line_start
-    if math.floor(os.clock() * 2) % 2 == 0 and cursor >= line_start and cursor <= line_finish then
+    local blink = api.time and math.floor(api.time() / 500) % 2 == 0
+    if blink and cursor >= line_start and cursor <= line_finish then
         local col = math.min(width - 1, math.max(0, cursor - line_start))
         api.screen.write(ctx.x + col, y, col < #text and text:sub(col + 1, col + 1) or " ", C.black, C.yellow)
     end
