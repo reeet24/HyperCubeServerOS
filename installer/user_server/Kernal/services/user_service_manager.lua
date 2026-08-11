@@ -206,8 +206,12 @@ function manager.run_ui(system, service)
             })
             system.screen:present()
         end
-        system.scheduler.tick({ type = "tick" })
         local event = system.screen:pull_event(0.1)
+        if event then
+            system.scheduler.tick(event)
+        else
+            system.scheduler.tick({ type = "tick" })
+        end
         if event then
             if event.type == "key" and keys and event.raw and event.raw[2] == keys.q then
                 running = false
