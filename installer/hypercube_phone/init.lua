@@ -152,16 +152,40 @@ local function rom_checksum()
     return checksum(data)
 end
 
-local function install_device()
+local function install_info()
     local data = read_file("hypercube_install")
     if not data then
-        return "TPhone"
+        return {
+            os = "HyperCube",
+            device = "TPhone",
+        }
     end
     local ok, info = pcall(textutils.unserialize, data)
-    if ok and type(info) == "table" and info.device then
-        return tostring(info.device)
+    if ok and type(info) == "table" then
+        return {
+            os = tostring(info.os or "HyperCube"),
+            device = tostring(info.device or "TPhone"),
+        }
     end
-    return "TPhone"
+    return {
+        os = "HyperCube",
+        device = "TPhone",
+    }
+end
+
+local function apply_install_info(info)
+    info = info or {}
+    TPhone.name = tostring(info.os or TPhone.name or "HyperCube")
+    TPhone.device = tostring(info.device or TPhone.device or "TPhone")
+    if TPhone.device == "TBusinessPhone" then
+        TPhone.subtitle = "Tesserac Business Phone"
+    elseif TPhone.device == "TDesktop" then
+        TPhone.subtitle = "HyperCube Desktop"
+    elseif TPhone.device == "TBusinessDesktop" then
+        TPhone.subtitle = "HyperCube Business Desktop"
+    else
+        TPhone.subtitle = "Tesserac TPhone"
+    end
 end
 
 function TPhone.enable_terminal_logs()
@@ -208,7 +232,7 @@ function TPhone.boot()
     logger.info("HyperCube boot", TPhone.root_context)
     TPhone.identity = tesseracid.load_local()
     TPhone.dev_mode = load_dev_mode()
-    TPhone.device = install_device()
+    apply_install_info(install_info())
     TPhone.rom_checksum = rom_checksum()
     if TPhone.identity then
         TPhone.hcfs = hcapi.UserFS.new(TPhone.identity)
@@ -228,13 +252,17 @@ function TPhone.boot()
         logger.warn("screen driver unavailable: " .. tostring(screen_err or screen_or_err), TPhone.root_context)
     end
 
+    local device_role = "phone"
+    if TPhone.device == "TBusinessPhone" or TPhone.device == "TBusinessDesktop" then
+        device_role = "business_phone"
+    end
     local net_ok, network_or_err = pcall(rednet_driver.init, {
         rednet = {
             mode = TPhone.network_mode,
             protocol = "tesserac",
             hostname = TPhone.name,
             os = TPhone.name,
-            role = TPhone.network_mode == "server" and "server" or "phone",
+            role = TPhone.network_mode == "server" and "server" or device_role,
             device = TPhone.device,
             identity = TPhone.identity,
             rom_checksum = TPhone.rom_checksum,

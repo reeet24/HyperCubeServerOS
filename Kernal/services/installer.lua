@@ -13,6 +13,16 @@ local SOURCE_PROFILES = {
         os = "HyperCube",
         device = "TBusinessPhone",
     },
+    desktop = {
+        source = "installer/hypercube_phone",
+        os = "HyperCubeDesktop",
+        device = "TDesktop",
+    },
+    business_desktop = {
+        source = "installer/hypercube_phone",
+        os = "HyperCubeDesktop",
+        device = "TBusinessDesktop",
+    },
     user_server = {
         source = "installer/user_server",
         os = "HyperCubeUserServer",
@@ -316,7 +326,10 @@ local function loader_source(profile)
 local ROM_FILE = "hypercube.rom"
 local ROM_KEY = "]] .. ROM_KEY .. [["
 local ROM_HEADER = "]] .. ROM_HEADER .. [["
-local DEVICE = "]] .. tostring(profile.device or "TPhone") .. [["
+local INSTALL_INFO = {
+    os = "]] .. tostring(profile.os or "HyperCube") .. [[",
+    device = "]] .. tostring(profile.device or "TPhone") .. [[",
+}
 
 local function read_all(path)
     local handle = fs.open(path, "rb")
@@ -549,6 +562,9 @@ end
 
 local ok, err = pcall(function()
     local payload = decode_rom()
+    INSTALL_INFO.os = payload.os or INSTALL_INFO.os
+    INSTALL_INFO.device = payload.device or INSTALL_INFO.device
+    write_all("hypercube_install", textutils.serialize(INSTALL_INFO), false)
     local rom = install_memory_rom(payload)
     local init_loader, init_err = rom.load("init.lua", _G)
     if not init_loader then

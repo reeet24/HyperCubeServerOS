@@ -247,6 +247,24 @@ local function draw_installer(screen, hypercube, state, width, y, height)
             bg = source_profile.device == "UserServer" and C.yellow or C.gray,
         },
     })
+    add_buttons({
+        {
+            id = "installer_desktop",
+            x = 4,
+            width = 12,
+            label = "Desktop",
+            fg = source_profile.device == "TDesktop" and C.black or C.white,
+            bg = source_profile.device == "TDesktop" and C.yellow or C.gray,
+        },
+        {
+            id = "installer_business_desktop",
+            x = 18,
+            width = 14,
+            label = "BizDesktop",
+            fg = source_profile.device == "TBusinessDesktop" and C.black or C.white,
+            bg = source_profile.device == "TBusinessDesktop" and C.yellow or C.gray,
+        },
+    })
     add_spacer()
     add_buttons({
         {
@@ -814,6 +832,14 @@ local function ensure_screen_manager(state, hypercube)
             elseif id == "installer_business_phone" and hypercube.installer and hypercube.installer.set_source then
                 hypercube.installer:set_source("business_phone")
                 hypercube.logger.info("installer source set business phone", hypercube.root_context)
+                return true
+            elseif id == "installer_desktop" and hypercube.installer and hypercube.installer.set_source then
+                hypercube.installer:set_source("desktop")
+                hypercube.logger.info("installer source set desktop", hypercube.root_context)
+                return true
+            elseif id == "installer_business_desktop" and hypercube.installer and hypercube.installer.set_source then
+                hypercube.installer:set_source("business_desktop")
+                hypercube.logger.info("installer source set business desktop", hypercube.root_context)
                 return true
             elseif id == "installer_user_server" and hypercube.installer and hypercube.installer.set_source then
                 hypercube.installer:set_source("user_server")

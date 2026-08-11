@@ -52,6 +52,16 @@ local function network_summary(tphone)
     return tostring(network.status or "offline")
 end
 
+local function is_desktop(tphone)
+    local device = tostring(tphone and tphone.device or "")
+    return device == "TDesktop" or device == "TBusinessDesktop"
+end
+
+local function is_business(tphone)
+    local device = tostring(tphone and tphone.device or "")
+    return device == "TBusinessPhone" or device == "TBusinessDesktop"
+end
+
 local function draw_wallpaper(screen, width, height)
     screen:clear(C.black)
     for y = 1, height do
@@ -59,6 +69,38 @@ local function draw_wallpaper(screen, width, height)
         if y > height * 0.35 then bg = C.purple end
         if y > height * 0.70 then bg = C.black end
         screen:rect(1, y, width, 1, bg)
+    end
+end
+
+local function draw_desktop_wallpaper(screen, width, height)
+    screen:clear(C.black)
+    for y = 1, height do
+        local bg = C.cyan
+        if y > height * 0.28 then bg = C.blue end
+        if y > height * 0.68 then bg = C.gray end
+        screen:rect(1, y, width, 1, bg)
+    end
+    if width >= 36 and height >= 14 then
+        screen:rect(math.max(2, width - 18), 4, 14, 1, C.lightGray)
+        screen:rect(math.max(2, width - 22), 5, 20, 1, C.white)
+        screen:rect(math.max(2, width - 16), 6, 12, 1, C.lightGray)
+    end
+end
+
+local function draw_menu_bar(screen, tphone, width)
+    screen:rect(1, 1, width, 1, C.white)
+    local product = is_business(tphone) and "Business" or "Desktop"
+    local right = network_summary(tphone) .. "  " .. time_label()
+    if tphone.dev_mode then
+        right = "DEV  " .. right
+    end
+    local left_width = width
+    if width > #right + 4 then
+        left_width = width - #right - 3
+    end
+    screen:write(2, 1, truncate("HyperCube " .. product, math.max(1, left_width - 1)), C.black, C.white)
+    if width > #right + 2 then
+        screen:write(width - #right, 1, right, C.black, C.white)
     end
 end
 
@@ -88,7 +130,49 @@ local function draw_home_indicator(screen, width, height)
     screen:rect(center_x(width, string.rep(" ", w)), height, w, 1, C.lightGray)
 end
 
+local function draw_desktop_dock(screen, width, height, installed)
+    local dock_y = height
+    local dock_w = math.min(width - 4, math.max(18, math.floor(width * 0.70)))
+    local dock_x = center_x(width, string.rep(" ", dock_w))
+    local dock_apps = {}
+    for _, app in ipairs(installed or {}) do
+        if app.manifest.dock then
+            dock_apps[#dock_apps + 1] = app
+        end
+    end
+    if #dock_apps == 0 then
+        for _, app in ipairs(installed or {}) do
+            dock_apps[#dock_apps + 1] = app
+        end
+    end
+    table.sort(dock_apps, function(a, b)
+        return dock_order(a) < dock_order(b)
+    end)
+    local max_dock = math.max(3, math.min(8, math.floor((dock_w - 2) / 7)))
+    while #dock_apps > max_dock do
+        dock_apps[#dock_apps] = nil
+    end
+
+    screen:rect(dock_x, dock_y, dock_w, 1, C.lightGray)
+    local buttons = {}
+    if #dock_apps == 0 then
+        return buttons
+    end
+    local button_w = math.max(5, math.floor((dock_w - 2) / #dock_apps))
+    local x = dock_x + 1
+    for _, app in ipairs(dock_apps) do
+        local label = truncate(app.manifest.label or app.manifest.id, button_w)
+        buttons[app.manifest.id] = screen:button(app.manifest.id, x, dock_y, button_w, label, {
+            fg = C.white,
+            bg = app.manifest.color or C.blue,
+        })
+        x = x + button_w
+    end
+    return buttons
+end
+
 local find_app
+local dock_order
 
 local function app_render_mode(app)
     local mode = app and app.manifest and app.manifest.render_mode or "window"
@@ -243,7 +327,7 @@ local function layout_apps(width, height, installed, page)
     return icons, page, page_count
 end
 
-local function dock_order(app)
+function dock_order(app)
     local id = app and app.manifest and app.manifest.id
     local priority = {
         appstore = 1,
@@ -341,6 +425,32 @@ end
 local function render_home(tphone, state)
     local screen = tphone.screen
     local width, height = screen:get_size()
+    if is_desktop(tphone) then
+        draw_desktop_wallpaper(screen, width, height)
+        draw_menu_bar(screen, tphone, width)
+        if height >= 5 then
+            local title = is_business(tphone) and "Business Desktop" or "Desktop"
+            screen:write(3, 3, title, C.white, C.blue)
+            if width >= 34 then
+                local user = tphone.identity and (tphone.identity.username or tphone.identity.tesserac_id) or "Not signed in"
+                screen:write(3, 4, truncate(tostring(user), width - 6), C.lightGray, C.blue)
+            end
+        end
+
+        state.apps, state.home_page, state.home_page_count = layout_apps(width, math.max(8, height - 2), state.installed_apps, state.home_page)
+        for _, app in ipairs(state.apps) do
+            draw_app_icon(screen, app)
+        end
+
+        state.buttons = draw_desktop_dock(screen, width, height, state.installed_apps)
+        local pager_buttons = draw_home_pager(screen, state, width, height)
+        for id, button in pairs(pager_buttons) do
+            state.buttons[id] = button
+        end
+        screen:present()
+        return
+    end
+
     draw_wallpaper(screen, width, height)
     draw_status_bar(screen, tphone, width)
     draw_title(screen, tphone, width)
@@ -360,6 +470,23 @@ local function render_home(tphone, state)
 end
 
 local function draw_app_panel(screen, tphone, title, width, height)
+    if is_desktop(tphone) then
+        draw_desktop_wallpaper(screen, width, height)
+        draw_menu_bar(screen, tphone, width)
+        local win_x = 3
+        local win_y = 3
+        local win_w = math.max(12, width - 4)
+        local win_h = math.max(5, height - 5)
+        screen:rect(win_x, win_y, win_w, win_h, C.black)
+        screen:border(win_x, win_y, win_w, win_h, C.lightGray, C.black)
+        screen:rect(win_x + 1, win_y, win_w - 2, 1, C.lightGray)
+        screen:write(win_x + 2, win_y, "o o o", C.red, C.lightGray)
+        screen:write(win_x + 9, win_y, truncate(title, math.max(1, win_w - 12)), C.black, C.lightGray)
+        return {
+            home = screen:button("home", win_x + 2, win_y, 5, "o o o", { fg = C.red, bg = C.lightGray }),
+        }
+    end
+
     draw_wallpaper(screen, width, height)
     draw_status_bar(screen, tphone, width)
     screen:rect(2, 3, width - 2, height - 4, C.black)
@@ -420,6 +547,14 @@ local function app_layout_for_mode(screen, tphone, state, app, mode, width, heig
     end
 
     state.buttons = draw_app_panel(screen, tphone, app.manifest.title, width, height)
+    if is_desktop(tphone) then
+        return {
+            x = 5,
+            y = 5,
+            width = math.max(1, width - 8),
+            height = math.max(1, height - 8),
+        }
+    end
     return {
         x = 4,
         y = 5,

@@ -166,7 +166,7 @@ function HyperCube.boot()
         })
         if HyperCube.network and HyperCube.installer.update_metadata_for_device then
             HyperCube.network.expected_rom_checksums = {}
-            for _, device in ipairs({ "TPhone", "TBusinessPhone" }) do
+            for _, device in ipairs({ "TPhone", "TBusinessPhone", "TDesktop", "TBusinessDesktop" }) do
                 local metadata_ok, metadata = HyperCube.installer:update_metadata_for_device(device)
                 if metadata_ok and metadata then
                     HyperCube.network.expected_rom_checksums[device] = metadata.rom_checksum

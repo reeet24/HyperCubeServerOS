@@ -253,7 +253,11 @@ local function phone_rom_integrity(self, message)
     elseif device == "" and role == "business_phone" then
         device = "TBusinessPhone"
     end
-    if role ~= "phone" and role ~= "business_phone" and device ~= "TPhone" and device ~= "TBusinessPhone" then
+    local managed_device = device == "TPhone"
+        or device == "TBusinessPhone"
+        or device == "TDesktop"
+        or device == "TBusinessDesktop"
+    if role ~= "phone" and role ~= "business_phone" and not managed_device then
         return true
     end
 

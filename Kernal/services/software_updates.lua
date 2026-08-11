@@ -73,7 +73,7 @@ function software_updates.install(hypercube)
             local current = tostring(message.version or "")
             local metadata_ok, metadata = update_metadata_for_request(hypercube, message)
             reply(rednet, sender, network.protocol, "update.status.result", true, {
-                os = "HyperCube",
+                os = metadata_ok and metadata.os or tostring(message.os or "HyperCube"),
                 device = metadata_ok and metadata.device or tostring(message.device or "TPhone"),
                 version = version,
                 rom_checksum = metadata_ok and metadata.rom_checksum or nil,

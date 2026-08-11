@@ -274,16 +274,25 @@ local function request(network, message, expected)
     return network:request(message, expected, 5)
 end
 
-local function install_device()
+local function install_info()
     local raw = read_file("hypercube_install")
     if not raw then
-        return "TPhone"
+        return {
+            os = "HyperCube",
+            device = "TPhone",
+        }
     end
     local ok, info = pcall(unserialize, raw)
-    if ok and type(info) == "table" and info.device then
-        return tostring(info.device)
+    if ok and type(info) == "table" then
+        return {
+            os = tostring(info.os or "HyperCube"),
+            device = tostring(info.device or "TPhone"),
+        }
     end
-    return "TPhone"
+    return {
+        os = "HyperCube",
+        device = "TPhone",
+    }
 end
 
 function tesseracid.ensure_device_identity(network, logger, options)
@@ -320,10 +329,11 @@ function tesseracid.ensure_device_identity(network, logger, options)
     local password = prompt("Password: ", true)
     local password_hash = tesseracid.password_hash(normalized, password, normalized)
     local message_type = choice == "2" and "auth.signup" or "auth.signin"
-    local device_type = options.device or install_device()
-    local business_install = device_type == "TBusinessPhone"
+    local local_install = install_info()
+    local device_type = options.device or local_install.device
+    local business_install = device_type == "TBusinessPhone" or device_type == "TBusinessDesktop"
     local role = options.role or (business_install and "business_phone" or "phone")
-    local os_name = options.os or "HyperCube"
+    local os_name = options.os or local_install.os or "HyperCube"
 
     local reply, request_err = request(network, {
         type = message_type,
