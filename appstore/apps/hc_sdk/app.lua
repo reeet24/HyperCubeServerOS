@@ -212,6 +212,13 @@ local function load_current_file(state)
     state.edit_scroll = 0
 end
 
+local function clamp_scroll(value, total, visible)
+    value = math.floor(tonumber(value) or 0)
+    total = math.max(0, math.floor(tonumber(total) or 0))
+    visible = math.max(1, math.floor(tonumber(visible) or 1))
+    return math.max(0, math.min(value, math.max(0, total - visible)))
+end
+
 local function create_project(state, id)
     id = safe_id(id or state.new_id or "my_app")
     local root = root_for(id)
@@ -422,6 +429,7 @@ end
 local function push_term(state, line)
     state.term_lines = state.term_lines or {}
     state.term_lines[#state.term_lines + 1] = tostring(line or "")
+    state.term_scroll = 0
     while #state.term_lines > 120 do
         table.remove(state.term_lines, 1)
     end
@@ -520,6 +528,12 @@ local function init(state)
     state.doc_query = ""
     state.term_input = ""
     state.term_lines = { "HyperCube SDK terminal", "Type help" }
+    state.project_scroll = 0
+    state.files_scroll = 0
+    state.lint_scroll = 0
+    state.doc_scroll = 0
+    state.api_scroll = 0
+    state.term_scroll = 0
     load_projects(state)
     load_project(state, state.projects[1] or state.app_id)
 end
@@ -564,7 +578,11 @@ local function draw_project(ctx, state, y)
     ctx.buttons.next_project = api.screen.button("next_project", ctx.x + 11, y + 1, 3, ">", { fg = C.white, bg = C.blue })
     api.screen.write(ctx.x + 15, y + 1, "new id: " .. tostring(state.new_id or ""), C.white, C.black)
     local row = y + 3
-    for i, id in ipairs(state.projects or {}) do
+    local visible = math.max(1, ctx.y + ctx.height - row - 1)
+    state.project_scroll = clamp_scroll(state.project_scroll, #(state.projects or {}), visible)
+    local first = (state.project_scroll or 0) + 1
+    for i = first, math.min(#(state.projects or {}), first + visible - 1) do
+        local id = state.projects[i]
         if row >= ctx.y + ctx.height - 1 then break end
         local marker = id == state.app_id and "> " or "  "
         api.screen.write(ctx.x, row, marker .. id, id == state.app_id and C.yellow or C.lightGray, C.black)
@@ -580,6 +598,7 @@ local function draw_editor(ctx, state, y)
     ctx.buttons.complete_insert = api.screen.button("complete_insert", ctx.x + 17, y + 1, 8, "Insert", { fg = C.black, bg = C.yellow })
     local lines = api.screen.wrap(state.source or "", math.max(1, ctx.width - 1))
     local max_rows = math.max(1, ctx.height - 6)
+    state.edit_scroll = clamp_scroll(state.edit_scroll, #lines, max_rows)
     local first = math.max(1, (state.edit_scroll or 0) + 1)
     for i = 1, math.min(max_rows, #lines - first + 1) do
         api.screen.write(ctx.x, y + 2 + i, truncate(lines[first + i - 1], ctx.width), C.lightGray, C.black)
@@ -611,7 +630,11 @@ local function draw_files(ctx, state, y)
     ctx.buttons.next_file = api.screen.button("next_file", ctx.x + 4, y + 1, 3, ">", { fg = C.white, bg = C.blue })
     ctx.buttons.delete_file = api.screen.button("delete_file", ctx.x + 8, y + 1, 7, "Delete", { fg = C.white, bg = C.red })
     local row = y + 3
-    for i, file in ipairs(state.files or {}) do
+    local visible = math.max(1, ctx.y + ctx.height - row - 1)
+    state.files_scroll = clamp_scroll(state.files_scroll, #(state.files or {}), visible)
+    local first = (state.files_scroll or 0) + 1
+    for i = first, math.min(#(state.files or {}), first + visible - 1) do
+        local file = state.files[i]
         if row >= ctx.y + ctx.height - 1 then break end
         local marker = i == state.file_index and "> " or "  "
         api.screen.write(ctx.x, row, marker .. file, i == state.file_index and C.yellow or C.lightGray, C.black)
@@ -626,10 +649,13 @@ local function draw_lint(ctx, state, y)
         api.screen.write(ctx.x, y + 1, "No diagnostics.", C.green, C.black)
         return
     end
-    for i, item in ipairs(state.diagnostics) do
-        if i > ctx.height - 4 then break end
+    local visible = math.max(1, ctx.height - 4)
+    state.lint_scroll = clamp_scroll(state.lint_scroll, #(state.diagnostics or {}), visible)
+    local first = (state.lint_scroll or 0) + 1
+    for row = 1, math.min(visible, #(state.diagnostics or {}) - first + 1) do
+        local item = state.diagnostics[first + row - 1]
         local text = tostring(item.file) .. " " .. tostring(item.severity) .. ": " .. tostring(item.message)
-        api.screen.write(ctx.x, y + i, truncate(text, ctx.width), item.severity == "error" and C.red or C.orange, C.black)
+        api.screen.write(ctx.x, y + row, truncate(text, ctx.width), item.severity == "error" and C.red or C.orange, C.black)
     end
 end
 
@@ -639,8 +665,11 @@ local function draw_docs(ctx, state, y)
     ctx.buttons.doc_search = api.screen.button("doc_search", ctx.x + 8, y, 7, "Search", { fg = C.white, bg = C.green })
     api.screen.write(ctx.x + 16, y, truncate((state.doc_query ~= "" and ("search: " .. state.doc_query) or ("doc: " .. state.doc_id)), ctx.width - 16), C.cyan, C.black)
     local lines = load_server_doc(state)
-    for i = 1, math.min(#lines, ctx.height - 4) do
-        api.screen.write(ctx.x, y + i + 1, truncate(lines[i], ctx.width), C.lightGray, C.black)
+    local visible = math.max(1, ctx.height - 4)
+    state.doc_scroll = clamp_scroll(state.doc_scroll, #lines, visible)
+    local first = (state.doc_scroll or 0) + 1
+    for i = 1, math.min(#lines - first + 1, visible) do
+        api.screen.write(ctx.x, y + i + 1, truncate(lines[first + i - 1], ctx.width), C.lightGray, C.black)
     end
 end
 
@@ -650,8 +679,11 @@ local function draw_api(ctx, state, y)
     ctx.buttons.complete_prefix = api.screen.button("complete_prefix", ctx.x, y + 1, 7, "Prefix", { fg = C.white, bg = C.blue })
     local list = completions(prefix)
     state.current_completions = list
-    for i = 1, math.min(#list, ctx.height - 4) do
-        api.screen.write(ctx.x, y + i + 1, truncate(list[i], ctx.width), C.yellow, C.black)
+    local visible = math.max(1, ctx.height - 4)
+    state.api_scroll = clamp_scroll(state.api_scroll, #list, visible)
+    local first = (state.api_scroll or 0) + 1
+    for i = 1, math.min(#list - first + 1, visible) do
+        api.screen.write(ctx.x, y + i + 1, truncate(list[first + i - 1], ctx.width), C.yellow, C.black)
     end
 end
 
@@ -673,7 +705,8 @@ end
 local function draw_term(ctx, state, y, height, width)
     api.screen.write(ctx.x, y, "SDK terminal", C.cyan, C.black)
     local visible = math.max(1, height - 3)
-    local first = math.max(1, #(state.term_lines or {}) - visible + 1)
+    state.term_scroll = clamp_scroll(state.term_scroll, #(state.term_lines or {}), visible)
+    local first = math.max(1, #(state.term_lines or {}) - visible + 1 - (state.term_scroll or 0))
     local row = y + 1
     for i = first, #(state.term_lines or {}) do
         api.screen.write(ctx.x, row, truncate(state.term_lines[i], width), C.lightGray, C.black)
@@ -743,6 +776,33 @@ end
 function app.on_touch(ctx)
     local state = ctx.state
     init(state)
+    local event = ctx.event or {}
+    if event.type == "scroll" then
+        local delta = tonumber(event.direction or (event.raw and event.raw[2]) or 0) or 0
+        if delta == 0 then
+            return false
+        end
+        if ctx.window and ctx.window.popup_kind == "terminal" then
+            state.term_scroll = (state.term_scroll or 0) - delta
+        elseif state.tab == "project" then
+            state.project_scroll = (state.project_scroll or 0) + delta
+        elseif state.tab == "edit" then
+            state.edit_scroll = (state.edit_scroll or 0) + delta
+        elseif state.tab == "files" then
+            state.files_scroll = (state.files_scroll or 0) + delta
+        elseif state.tab == "lint" then
+            state.lint_scroll = (state.lint_scroll or 0) + delta
+        elseif state.tab == "docs" then
+            state.doc_scroll = (state.doc_scroll or 0) + delta
+        elseif state.tab == "api" then
+            state.api_scroll = (state.api_scroll or 0) + delta
+        elseif state.tab == "term" then
+            state.term_scroll = (state.term_scroll or 0) - delta
+        else
+            return false
+        end
+        return true
+    end
     local id = tostring(ctx.button_id or "")
     local tab = id:match("^tab_(.+)$")
     if tab then
@@ -798,6 +858,7 @@ function app.on_touch(ctx)
         state.complete_prefix = state.complete_prefix == "app." and "HCAPI." or "app."
     elseif id == "doc_prev" or id == "doc_next" then
         state.doc_query = ""
+        state.doc_scroll = 0
         local current = 1
         for i, doc_id in ipairs(DOC_IDS) do
             if doc_id == state.doc_id then current = i break end
@@ -808,6 +869,7 @@ function app.on_touch(ctx)
         state.doc_id = DOC_IDS[current]
     elseif id == "doc_search" then
         state.doc_query = state.doc_query == "" and "screen" or ""
+        state.doc_scroll = 0
     else
         return false
     end
@@ -848,9 +910,11 @@ function app.on_key(ctx)
     elseif state.tab == "docs" then
         if event.type == "char" then
             state.doc_query = tostring(state.doc_query or "") .. tostring(event.raw and event.raw[2] or "")
+            state.doc_scroll = 0
             return true
         elseif event.type == "key" and event.raw and event.raw[2] == keys.backspace then
             state.doc_query = tostring(state.doc_query or ""):sub(1, math.max(0, #(state.doc_query or "") - 1))
+            state.doc_scroll = 0
             return true
         end
     elseif state.tab == "edit" then
