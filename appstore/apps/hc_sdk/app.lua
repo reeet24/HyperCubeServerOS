@@ -11,7 +11,8 @@ local app = {
 }
 
 local DOC_IDS = { "desktop-sdk", "userapp-api", "banking-api", "web-api", "user-server-api" }
-local TABS = { "project", "edit", "manifest", "files", "lint", "docs", "api", "build", "term" }
+local TABS = { "project", "edit", "manifest", "docs", "api", "build", "term" }
+local MENU_ACTIONS = { "save", "install", "run", "term" }
 local API_WORDS = {
     "HCAPI.screen.write", "HCAPI.screen.write_wrap", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.wrap",
     "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.fs.delete",
@@ -209,6 +210,8 @@ local function load_current_file(state)
     state.file = state.files[state.file_index]
     state.source = read_file(state.root .. "/" .. state.file) or ""
     state.cursor = #(state.source or "")
+    state.selection_anchor = nil
+    state.lint_dirty = true
     state.edit_scroll = 0
 end
 
@@ -217,6 +220,182 @@ local function clamp_scroll(value, total, visible)
     total = math.max(0, math.floor(tonumber(total) or 0))
     visible = math.max(1, math.floor(tonumber(visible) or 1))
     return math.max(0, math.min(value, math.max(0, total - visible)))
+end
+
+local function clamp_cursor(state, pos)
+    return math.max(0, math.min(math.floor(tonumber(pos) or 0), #(state.source or "")))
+end
+
+local function clear_selection(state)
+    state.selection_anchor = nil
+end
+
+local function selection_bounds(state)
+    local anchor = state.selection_anchor
+    local cursor = state.cursor or 0
+    if anchor == nil or anchor == cursor then
+        return nil
+    end
+    return math.min(anchor, cursor), math.max(anchor, cursor)
+end
+
+local function selected_text(state)
+    local first, last = selection_bounds(state)
+    if not first then
+        return ""
+    end
+    return tostring(state.source or ""):sub(first + 1, last)
+end
+
+local function set_source(state, source)
+    state.source = tostring(source or "")
+    state.cursor = clamp_cursor(state, state.cursor)
+    state.dirty = true
+    state.lint_dirty = true
+end
+
+local function replace_selection(state, text)
+    local source = tostring(state.source or "")
+    local first, last = selection_bounds(state)
+    text = tostring(text or "")
+    if first then
+        state.source = source:sub(1, first) .. text .. source:sub(last + 1)
+        state.cursor = first + #text
+        clear_selection(state)
+    else
+        local cursor = clamp_cursor(state, state.cursor)
+        state.source = source:sub(1, cursor) .. text .. source:sub(cursor + 1)
+        state.cursor = cursor + #text
+    end
+    state.dirty = true
+    state.lint_dirty = true
+end
+
+local function delete_selection(state)
+    local text = selected_text(state)
+    if text == "" then
+        return false
+    end
+    replace_selection(state, "")
+    return true
+end
+
+local function line_start_for(source, pos)
+    source = tostring(source or "")
+    pos = math.max(0, math.min(tonumber(pos) or 0, #source))
+    local before = source:sub(1, pos)
+    local start = before:match(".*()\n")
+    return start or 0
+end
+
+local function line_end_for(source, pos)
+    source = tostring(source or "")
+    pos = math.max(0, math.min(tonumber(pos) or 0, #source))
+    local found = source:find("\n", pos + 1, true)
+    return found and (found - 1) or #source
+end
+
+local function cursor_line_number(source, pos)
+    local _, count = tostring(source or ""):sub(1, math.max(0, pos)):gsub("\n", "")
+    return count + 1
+end
+
+local function move_cursor(state, pos, selecting)
+    if selecting and state.selection_anchor == nil then
+        state.selection_anchor = state.cursor or 0
+    elseif not selecting then
+        clear_selection(state)
+    end
+    state.cursor = clamp_cursor(state, pos)
+end
+
+local function move_cursor_word(state, direction, selecting)
+    local source = tostring(state.source or "")
+    local pos = clamp_cursor(state, state.cursor)
+    if direction < 0 then
+        while pos > 0 and source:sub(pos, pos):match("%s") do
+            pos = pos - 1
+        end
+        while pos > 0 and source:sub(pos, pos):match("[%w_]") do
+            pos = pos - 1
+        end
+    else
+        while pos < #source and source:sub(pos + 1, pos + 1):match("[%w_]") do
+            pos = pos + 1
+        end
+        while pos < #source and source:sub(pos + 1, pos + 1):match("%s") do
+            pos = pos + 1
+        end
+    end
+    move_cursor(state, pos, selecting)
+end
+
+local function visual_lines_for(source, width)
+    width = math.max(1, tonumber(width) or 1)
+    local lines = {}
+    local offset = 0
+    local line_no = 1
+    for raw in (tostring(source or "") .. "\n"):gmatch("(.-)\n") do
+        if raw == "" then
+            lines[#lines + 1] = { text = "", start = offset, finish = offset, line_no = line_no }
+        else
+            local index = 1
+            while index <= #raw do
+                local part = raw:sub(index, index + width - 1)
+                lines[#lines + 1] = {
+                    text = part,
+                    start = offset + index - 1,
+                    finish = offset + index - 1 + #part,
+                    line_no = line_no,
+                }
+                index = index + width
+            end
+        end
+        offset = offset + #raw + 1
+        line_no = line_no + 1
+    end
+    if #lines > 1 and lines[#lines].start >= #tostring(source or "") then
+        lines[#lines] = nil
+    end
+    if #lines == 0 then
+        lines[1] = { text = "", start = 0, finish = 0, line_no = 1 }
+    end
+    return lines
+end
+
+local function cursor_from_editor_point(state, x, y)
+    local layout = state.editor_layout
+    if type(layout) ~= "table" then
+        return state.cursor or 0
+    end
+    local row = math.max(0, math.floor((tonumber(y) or layout.y) - layout.y))
+    local line = layout.lines[(layout.first or 1) + row]
+    if not line then
+        return state.cursor or 0
+    end
+    local col = math.max(0, math.floor((tonumber(x) or layout.x) - layout.x))
+    return clamp_cursor(state, line.start + math.min(col, #line.text))
+end
+
+local function current_file_diagnostics(state)
+    local out = {}
+    for _, item in ipairs(state.diagnostics or {}) do
+        if item.file == state.file then
+            out[#out + 1] = item
+        end
+    end
+    return out
+end
+
+local function diagnostic_lines_for_current_file(state)
+    local lines = {}
+    for _, item in ipairs(current_file_diagnostics(state)) do
+        local line = tonumber(tostring(item.message or ""):match(":(%d+):") or tostring(item.message or ""):match("line%s+(%d+)"))
+        if line then
+            lines[line] = item.severity or "info"
+        end
+    end
+    return lines
 end
 
 local function create_project(state, id)
@@ -251,6 +430,9 @@ end
 local function save_current_file(state)
     local ok, err = write_file(state.root .. "/" .. state.file, state.source or "")
     state.status = ok and ("Saved " .. state.file) or tostring(err)
+    if ok then
+        state.dirty = false
+    end
     return ok
 end
 
@@ -321,6 +503,17 @@ local function lint_project(state)
     end
     state.diagnostics = diagnostics
     state.status = #diagnostics == 0 and "Lint passed" or ("Diagnostics: " .. tostring(#diagnostics))
+    return diagnostics
+end
+
+local function lint_current_file(state)
+    if not state.lint_dirty then
+        return state.diagnostics or {}
+    end
+    local diagnostics = {}
+    lint_source(state.file or "app.lua", state.source or "", diagnostics)
+    state.diagnostics = diagnostics
+    state.lint_dirty = false
     return diagnostics
 end
 
@@ -528,6 +721,12 @@ local function init(state)
     state.doc_query = ""
     state.term_input = ""
     state.term_lines = { "HyperCube SDK terminal", "Type help" }
+    state.menu_open = false
+    state.sidebar_open = true
+    state.clipboard = ""
+    state.ctrl_down = false
+    state.drag_selecting = false
+    state.lint_dirty = true
     state.project_scroll = 0
     state.files_scroll = 0
     state.lint_scroll = 0
@@ -563,12 +762,57 @@ local function draw_tabs(ctx, state)
 end
 
 local function draw_toolbar(ctx, state, y)
-    ctx.buttons.save = api.screen.button("save", ctx.x, y, 5, "Save", { fg = C.white, bg = C.blue })
-    ctx.buttons.lint = api.screen.button("lint", ctx.x + 6, y, 5, "Lint", { fg = C.white, bg = C.gray })
-    ctx.buttons.install = api.screen.button("install", ctx.x + 12, y, 7, "Install", { fg = C.white, bg = C.green })
-    ctx.buttons.run = api.screen.button("run", ctx.x + 20, y, 4, "Run", { fg = C.black, bg = C.yellow })
-    ctx.buttons.term = api.screen.button("term", ctx.x + 25, y, 5, "Term", { fg = C.white, bg = C.purple })
-    api.screen.write(ctx.x + 31, y, truncate(state.status or "", math.max(1, ctx.width - 31)), C.lightGray, C.black)
+    ctx.buttons.menu = api.screen.button("menu", ctx.x, y, 6, "Menu", { fg = C.white, bg = C.blue })
+    local status_x = ctx.x + 8
+    api.screen.write(status_x, y, truncate(state.status or "", math.max(1, ctx.width - 8)), C.lightGray, C.black)
+    if state.menu_open then
+        local labels = {
+            save = "Save",
+            install = "Install",
+            run = "Run",
+            term = "Terminal",
+        }
+        local row = y + 1
+        for _, action in ipairs(MENU_ACTIONS) do
+            ctx.buttons["menu_" .. action] = api.screen.button("menu_" .. action, ctx.x, row, 10, labels[action] or action, {
+                fg = C.white,
+                bg = action == "run" and C.green or C.gray,
+            })
+            row = row + 1
+        end
+    end
+end
+
+local function draw_file_sidebar(ctx, state, y)
+    local width = state.sidebar_open and math.min(18, math.max(10, math.floor(ctx.width * 0.32))) or 3
+    api.screen.rect(ctx.x, y, width, math.max(1, ctx.height - (y - ctx.y)), C.gray)
+    ctx.buttons.sidebar_toggle = api.screen.button("sidebar_toggle", ctx.x, y, 3, state.sidebar_open and "<<" or ">>", { fg = C.white, bg = C.blue })
+    if not state.sidebar_open then
+        return width + 1
+    end
+
+    ctx.buttons.prev_file = api.screen.button("prev_file", ctx.x + 4, y, 3, "<", { fg = C.white, bg = C.blue })
+    ctx.buttons.next_file = api.screen.button("next_file", ctx.x + 8, y, 3, ">", { fg = C.white, bg = C.blue })
+    ctx.buttons.new_file = api.screen.button("new_file", ctx.x + 12, y, math.max(1, math.min(5, width - 12)), "+", { fg = C.white, bg = C.green })
+
+    local row = y + 2
+    local visible = math.max(1, ctx.y + ctx.height - row)
+    state.files_scroll = clamp_scroll(state.files_scroll, #(state.files or {}), visible)
+    local first = (state.files_scroll or 0) + 1
+    for i = first, math.min(#(state.files or {}), first + visible - 1) do
+        local file = state.files[i]
+        local depth = 0
+        for _ in tostring(file or ""):gmatch("/") do
+            depth = depth + 1
+        end
+        local name = tostring(file or ""):match("([^/]+)$") or tostring(file or "")
+        local label = string.rep(" ", math.min(3, depth)) .. name
+        local bg = i == state.file_index and C.black or C.gray
+        local fg = i == state.file_index and C.yellow or C.white
+        ctx.buttons["file_" .. tostring(i)] = api.screen.button("file_" .. tostring(i), ctx.x, row, width, truncate(label, width), { fg = fg, bg = bg })
+        row = row + 1
+    end
+    return width + 1
 end
 
 local function draw_project(ctx, state, y)
@@ -625,18 +869,20 @@ local SPECIAL_NAMES = {
     keys = C.purple,
 }
 
-local function draw_code_segment(ctx, x, y, text, fg)
+local function draw_code_segment(ctx, x, y, text, fg, bg)
     if text == "" then
         return x
     end
-    api.screen.write(x, y, text, fg, C.black)
+    api.screen.write(x, y, text, fg, bg or C.black)
     return x + #text
 end
 
-local function draw_code_line(ctx, y, text)
+local function draw_code_line(ctx, y, line, state, diagnostics)
     local width = math.max(1, ctx.width)
-    text = tostring(text or ""):sub(1, width)
-    api.screen.write(ctx.x, y, string.rep(" ", width), C.lightGray, C.black)
+    local text = tostring(line and line.text or ""):sub(1, width)
+    local line_bg = diagnostics and diagnostics[line and line.line_no] == "error" and C.red or C.black
+    local sel_first, sel_last = selection_bounds(state)
+    api.screen.write(ctx.x, y, string.rep(" ", width), C.lightGray, line_bg)
 
     local x = ctx.x
     local index = 1
@@ -645,7 +891,7 @@ local function draw_code_line(ctx, y, text)
         local ch = text:sub(index, index)
 
         if two == "--" then
-            x = draw_code_segment(ctx, x, y, text:sub(index), C.gray)
+            x = draw_code_segment(ctx, x, y, text:sub(index), C.gray, line_bg)
             break
         elseif ch == "\"" or ch == "'" then
             local quote = ch
@@ -662,7 +908,10 @@ local function draw_code_line(ctx, y, text)
                 end
                 finish = finish + 1
             end
-            x = draw_code_segment(ctx, x, y, text:sub(index, math.min(finish, #text)), C.orange)
+            local segment = text:sub(index, math.min(finish, #text))
+            local global = (line.start or 0) + index - 1
+            local bg = sel_first and global < sel_last and global + #segment > sel_first and C.blue or line_bg
+            x = draw_code_segment(ctx, x, y, segment, C.orange, bg)
             index = math.min(finish + 1, #text + 1)
         elseif ch:match("[%a_]") then
             local finish = index
@@ -671,37 +920,61 @@ local function draw_code_line(ctx, y, text)
             end
             local word = text:sub(index, finish - 1)
             local color = SPECIAL_NAMES[word] or (LUA_KEYWORDS[word] and C.blue) or C.lightGray
-            x = draw_code_segment(ctx, x, y, word, color)
+            local global = (line.start or 0) + index - 1
+            local bg = sel_first and global < sel_last and global + #word > sel_first and C.blue or line_bg
+            x = draw_code_segment(ctx, x, y, word, color, bg)
             index = finish
         elseif ch:match("%d") then
             local finish = index
             while finish <= #text and text:sub(finish, finish):match("[%w%.]") do
                 finish = finish + 1
             end
-            x = draw_code_segment(ctx, x, y, text:sub(index, finish - 1), C.yellow)
+            local segment = text:sub(index, finish - 1)
+            local global = (line.start or 0) + index - 1
+            local bg = sel_first and global < sel_last and global + #segment > sel_first and C.blue or line_bg
+            x = draw_code_segment(ctx, x, y, segment, C.yellow, bg)
             index = finish
         elseif ch:match("[%+%-%*%/%=%%<>#{}%[%]%(%)%,%.:]") then
-            x = draw_code_segment(ctx, x, y, ch, C.white)
+            local global = (line.start or 0) + index - 1
+            local bg = sel_first and global >= sel_first and global < sel_last and C.blue or line_bg
+            x = draw_code_segment(ctx, x, y, ch, C.white, bg)
             index = index + 1
         else
-            x = draw_code_segment(ctx, x, y, ch, C.lightGray)
+            local global = (line.start or 0) + index - 1
+            local bg = sel_first and global >= sel_first and global < sel_last and C.blue or line_bg
+            x = draw_code_segment(ctx, x, y, ch, C.lightGray, bg)
             index = index + 1
         end
+    end
+
+    if math.floor(os.clock() * 2) % 2 == 0 and (state.cursor or 0) >= (line.start or 0) and (state.cursor or 0) <= (line.finish or 0) then
+        local col = math.min(width - 1, math.max(0, (state.cursor or 0) - (line.start or 0)))
+        api.screen.write(ctx.x + col, y, col < #text and text:sub(col + 1, col + 1) or " ", C.black, C.yellow)
     end
 end
 
 local function draw_editor(ctx, state, y)
     api.screen.write(ctx.x, y, "Editing " .. tostring(state.file), C.cyan, C.black)
-    ctx.buttons.prev_file = api.screen.button("prev_file", ctx.x, y + 1, 3, "<", { fg = C.white, bg = C.blue })
-    ctx.buttons.next_file = api.screen.button("next_file", ctx.x + 4, y + 1, 3, ">", { fg = C.white, bg = C.blue })
-    ctx.buttons.new_file = api.screen.button("new_file", ctx.x + 8, y + 1, 8, "NewFile", { fg = C.white, bg = C.green })
-    ctx.buttons.complete_insert = api.screen.button("complete_insert", ctx.x + 17, y + 1, 8, "Insert", { fg = C.black, bg = C.yellow })
-    local lines = api.screen.wrap(state.source or "", math.max(1, ctx.width - 1))
-    local max_rows = math.max(1, ctx.height - 6)
+    ctx.buttons.complete_insert = api.screen.button("complete_insert", ctx.x, y + 1, 8, "Insert", { fg = C.black, bg = C.yellow })
+    local diagnostics = lint_current_file(state)
+    local issue = diagnostics[1]
+    local status = issue and (tostring(issue.severity) .. ": " .. tostring(issue.message)) or "No diagnostics"
+    api.screen.write(ctx.x + 10, y + 1, truncate(status, math.max(1, ctx.width - 10)), issue and C.orange or C.green, C.black)
+    local lines = visual_lines_for(state.source or "", math.max(1, ctx.width - 1))
+    local max_rows = math.max(1, ctx.height - 5)
     state.edit_scroll = clamp_scroll(state.edit_scroll, #lines, max_rows)
     local first = math.max(1, (state.edit_scroll or 0) + 1)
+    state.editor_layout = {
+        x = ctx.x,
+        y = y + 3,
+        width = ctx.width,
+        height = max_rows,
+        first = first,
+        lines = lines,
+    }
+    local diagnostic_lines = diagnostic_lines_for_current_file(state)
     for i = 1, math.min(max_rows, #lines - first + 1) do
-        draw_code_line(ctx, y + 2 + i, lines[first + i - 1])
+        draw_code_line(ctx, y + 2 + i, lines[first + i - 1], state, diagnostic_lines)
     end
 end
 
@@ -829,16 +1102,23 @@ function app.render(ctx)
     local y = ctx.y + 2
     draw_toolbar(ctx, state, y)
     y = y + 2
+    if state.menu_open then
+        y = y + #MENU_ACTIONS
+    end
     if state.tab == "project" then
         draw_project(ctx, state, y)
     elseif state.tab == "edit" then
-        draw_editor(ctx, state, y)
+        local sidebar_width = draw_file_sidebar(ctx, state, y)
+        local editor_ctx = {
+            x = ctx.x + sidebar_width,
+            y = ctx.y,
+            width = math.max(1, ctx.width - sidebar_width),
+            height = ctx.height,
+            buttons = ctx.buttons,
+        }
+        draw_editor(editor_ctx, state, y)
     elseif state.tab == "manifest" then
         draw_manifest(ctx, state, y)
-    elseif state.tab == "files" then
-        draw_files(ctx, state, y)
-    elseif state.tab == "lint" then
-        draw_lint(ctx, state, y)
     elseif state.tab == "docs" then
         draw_docs(ctx, state, y)
     elseif state.tab == "api" then
@@ -871,6 +1151,56 @@ local function cycle_file(state, delta)
     if state.file_index < 1 then state.file_index = #(state.files or { "app.lua" }) end
     if state.file_index > #(state.files or {}) then state.file_index = 1 end
     load_current_file(state)
+end
+
+local function open_terminal(state)
+    if api.desktop and api.desktop.open_terminal then
+        local ok = api.desktop.open_terminal({ title = "SDK Terminal", cwd = state.root, width = 48, height = 14 })
+        if ok then
+            return true
+        end
+    end
+    state.tab = "term"
+    return true
+end
+
+local function key_is_ctrl(key)
+    return keys and (key == keys.leftCtrl or key == keys.rightCtrl or key == keys.leftControl or key == keys.rightControl)
+end
+
+local function select_file_index(state, index)
+    index = tonumber(index)
+    if not index or not state.files or not state.files[index] then
+        return false
+    end
+    save_current_file(state)
+    state.file_index = index
+    load_current_file(state)
+    return true
+end
+
+local function select_all(state)
+    state.selection_anchor = 0
+    state.cursor = #(state.source or "")
+end
+
+local function copy_selection(state)
+    local text = selected_text(state)
+    if text ~= "" then
+        state.clipboard = text
+        state.status = "Copied"
+        return true
+    end
+    return false
+end
+
+local function cut_selection(state)
+    if copy_selection(state) then
+        delete_selection(state)
+        state.status = "Cut"
+        return true
+    end
+    return false
 end
 
 function app.on_touch(ctx)
@@ -907,25 +1237,24 @@ function app.on_touch(ctx)
     local tab = id:match("^tab_(.+)$")
     if tab then
         state.tab = tab
-    elseif id == "save" then
+        state.menu_open = false
+    elseif id == "menu" then
+        state.menu_open = not state.menu_open
+    elseif id == "menu_save" then
         save_current_file(state)
         save_manifest(state)
-    elseif id == "lint" then
-        state.tab = "lint"
-        lint_project(state)
-    elseif id == "install" then
+        state.menu_open = false
+    elseif id == "menu_install" then
         install_project(state, false)
-    elseif id == "run" then
+        state.menu_open = false
+    elseif id == "menu_run" then
         install_project(state, true)
-    elseif id == "term" then
-        if api.desktop and api.desktop.open_terminal then
-            local ok = api.desktop.open_terminal({ title = "SDK Terminal", cwd = state.root, width = 48, height = 14 })
-            if not ok then
-                state.tab = "term"
-            end
-        else
-            state.tab = "term"
-        end
+        state.menu_open = false
+    elseif id == "menu_term" then
+        open_terminal(state)
+        state.menu_open = false
+    elseif id == "sidebar_toggle" then
+        state.sidebar_open = not state.sidebar_open
     elseif id == "new_project" then
         create_project(state, state.new_id)
     elseif id == "prev_project" then
@@ -944,6 +1273,8 @@ function app.on_touch(ctx)
             if file == name then state.file_index = i break end
         end
         load_current_file(state)
+    elseif id:match("^file_%d+$") then
+        select_file_index(state, tonumber(id:match("(%d+)$")))
     elseif id == "delete_file" and state.file ~= "app.lua" and state.file ~= "manifest" then
         api.userfs.delete(state.root .. "/" .. state.file)
         load_current_file(state)
@@ -951,7 +1282,7 @@ function app.on_touch(ctx)
     elseif id == "complete_insert" then
         local list = completions(state.complete_prefix or "HCAPI.")
         if list[1] then
-            state.source = (state.source or "") .. list[1]
+            replace_selection(state, list[1])
             state.status = "Inserted " .. list[1]
         end
     elseif id == "complete_prefix" then
@@ -971,6 +1302,21 @@ function app.on_touch(ctx)
         state.doc_query = state.doc_query == "" and "screen" or ""
         state.doc_scroll = 0
     else
+        if state.tab == "edit" and event.type == "touch" and state.editor_layout then
+            state.cursor = cursor_from_editor_point(state, event.x, event.y)
+            state.selection_anchor = nil
+            state.drag_selecting = true
+            return true
+        elseif state.tab == "edit" and event.type == "drag" and state.editor_layout then
+            if state.selection_anchor == nil then
+                state.selection_anchor = state.cursor or 0
+            end
+            state.cursor = cursor_from_editor_point(state, event.x, event.y)
+            return true
+        elseif event.type == "mouse_up" then
+            state.drag_selecting = false
+            return true
+        end
         return false
     end
     return true
@@ -980,6 +1326,40 @@ function app.on_key(ctx)
     local state = ctx.state
     init(state)
     local event = ctx.event
+    local key = event.raw and event.raw[2]
+    if event.type == "key" and key_is_ctrl(key) then
+        state.ctrl_down = true
+        return true
+    elseif event.type == "key_up" and key_is_ctrl(key) then
+        state.ctrl_down = false
+        return true
+    end
+    if event.type == "key" and state.ctrl_down then
+        if key == keys.s then
+            save_current_file(state)
+            save_manifest(state)
+            return true
+        elseif key == keys.t then
+            open_terminal(state)
+            return true
+        elseif key == keys.a and state.tab == "edit" then
+            select_all(state)
+            return true
+        elseif key == keys.c and state.tab == "edit" then
+            return copy_selection(state)
+        elseif key == keys.x and state.tab == "edit" then
+            return cut_selection(state)
+        elseif key == keys.v and state.tab == "edit" then
+            replace_selection(state, state.clipboard or "")
+            return true
+        elseif key == keys.left and state.tab == "edit" then
+            move_cursor_word(state, -1, true)
+            return true
+        elseif key == keys.right and state.tab == "edit" then
+            move_cursor_word(state, 1, true)
+            return true
+        end
+    end
     if state.tab == "term" or (ctx.window and ctx.window.popup_kind == "terminal") then
         if event.type == "char" then
             state.term_input = state.term_input .. tostring(event.raw and event.raw[2] or "")
@@ -1019,22 +1399,36 @@ function app.on_key(ctx)
         end
     elseif state.tab == "edit" then
         if event.type == "char" then
-            state.source = (state.source or "") .. tostring(event.raw and event.raw[2] or "")
+            replace_selection(state, tostring(event.raw and event.raw[2] or ""))
             return true
         elseif event.type == "paste" then
-            state.source = (state.source or "") .. tostring(event.raw and event.raw[2] or "")
+            replace_selection(state, tostring(event.raw and event.raw[2] or ""))
             return true
         elseif event.type == "key" and event.raw and event.raw[2] == keys.backspace then
-            state.source = tostring(state.source or ""):sub(1, math.max(0, #(state.source or "") - 1))
+            if not delete_selection(state) and (state.cursor or 0) > 0 then
+                local source = tostring(state.source or "")
+                local cursor = clamp_cursor(state, state.cursor)
+                state.source = source:sub(1, cursor - 1) .. source:sub(cursor + 1)
+                state.cursor = cursor - 1
+                state.dirty = true
+                state.lint_dirty = true
+            end
             return true
         elseif event.type == "key" and event.raw and event.raw[2] == keys.enter then
-            state.source = (state.source or "") .. "\n"
+            replace_selection(state, "\n")
             return true
         elseif event.type == "key" and event.raw and event.raw[2] == keys.tab then
             local prefix = tostring(state.source or ""):match("([%w_%.:]+)$") or state.complete_prefix or "HCAPI."
             local list = completions(prefix)
             if list[1] then
-                state.source = tostring(state.source or ""):gsub("([%w_%.:]+)$", list[1])
+                local source = tostring(state.source or "")
+                local cursor = clamp_cursor(state, state.cursor)
+                local before = source:sub(1, cursor)
+                local word = before:match("([%w_%.:]+)$") or ""
+                state.source = before:sub(1, #before - #word) .. list[1] .. source:sub(cursor + 1)
+                state.cursor = #before - #word + #list[1]
+                state.dirty = true
+                state.lint_dirty = true
                 state.status = "Completed " .. list[1]
             end
             return true
@@ -1043,6 +1437,18 @@ function app.on_key(ctx)
             return true
         elseif event.type == "key" and event.raw and event.raw[2] == keys.down then
             state.edit_scroll = (state.edit_scroll or 0) + 1
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.left then
+            move_cursor(state, (state.cursor or 0) - 1, false)
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.right then
+            move_cursor(state, (state.cursor or 0) + 1, false)
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.home then
+            move_cursor(state, line_start_for(state.source, state.cursor or 0), false)
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys["end"] then
+            move_cursor(state, line_end_for(state.source, state.cursor or 0), false)
             return true
         end
     end
