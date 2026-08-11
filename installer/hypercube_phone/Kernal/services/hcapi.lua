@@ -1,3 +1,5 @@
+local printer_driver_ok, printer_driver = pcall(require, "Kernal.drivers.printer")
+
 local hcapi = {}
 
 local C = {
@@ -667,6 +669,38 @@ local function make_phone_api(tphone)
     }
 end
 
+local function is_desktop_device(tphone)
+    local device = tostring(tphone and tphone.device or "")
+    return device == "TDesktop" or device == "TBusinessDesktop"
+end
+
+local function make_printer_api(tphone)
+    local function status()
+        if not is_desktop_device(tphone) then
+            return false, "DesktopRequired"
+        end
+        if not printer_driver_ok or not printer_driver then
+            return false, "PrinterDriverUnavailable"
+        end
+        return printer_driver.status()
+    end
+
+    local function print_text(text, options)
+        if not is_desktop_device(tphone) then
+            return false, "DesktopRequired"
+        end
+        if not printer_driver_ok or not printer_driver then
+            return false, "PrinterDriverUnavailable"
+        end
+        return printer_driver.print(text, options)
+    end
+
+    return {
+        status = status,
+        print = print_text,
+    }
+end
+
 local function make_fs_api(user_fs, app_id)
     return {
         read = function(path)
@@ -810,6 +844,9 @@ end
 
 local function make_device_api(tphone)
     return {
+        os = tphone and tphone.name or nil,
+        type = tphone and tphone.device or nil,
+        desktop = is_desktop_device(tphone),
         shutdown = function()
             if tphone and tphone.shutdown then
                 tphone.shutdown("settings")
@@ -838,6 +875,7 @@ function hcapi.create(tphone, app_id)
         hypernet = make_net_api(tphone),
         bank = make_bank_api(tphone, app_id),
         phone = make_phone_api(tphone),
+        printer = make_printer_api(tphone),
         fs = make_fs_api(tphone.hcfs, app_id),
         dev = make_dev_api(tphone),
         device = make_device_api(tphone),

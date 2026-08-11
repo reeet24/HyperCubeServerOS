@@ -435,6 +435,7 @@ Multi-file packages use `files`:
     author = "You",
     description = "A HyperCubeOS port.",
     mutable_paths = { "mods", "config", "saves" },
+    devices = { "TDesktop", "TBusinessDesktop" },
     integrity_encoded = "...",
     files = {
         { path = "app.lua", data = "return require('main')" },
@@ -447,6 +448,8 @@ Multi-file packages use `files`:
 ```
 
 The appstore download response includes both `source` for older single-file installers and `files` for multi-file installers. Current phone installs prefer the bundle and skip duplicate `source` writes when `files` already contains `app.lua`. The response also includes `integrity_encoded`, `protected_file_count`, and `mutable_paths`.
+
+`devices` is optional. When present, it restricts install/load to specific HyperCube device types such as `TDesktop` and `TBusinessDesktop`. Unsupported devices return `DeviceNotSupported` at install time, and the App Store hides incompatible apps from its catalog.
 
 Reserved and invalid bundle paths:
 
@@ -500,6 +503,28 @@ The terminal app and dev helpers require phone dev mode.
 - `api.dev.decode_json(text)`
 
 Dev mode is intended for trusted development phones only. Do not expose dev-mode workflows to normal users.
+
+## Printer API
+
+Desktop apps can print through `api.printer`.
+
+```lua
+local ok, result = api.printer.print("Hello\nfrom HyperCube", {
+    title = "Letter",
+})
+```
+
+`api.printer.status()` returns `true, { name, paper, ink }` when a printer peripheral is attached.
+
+`api.printer.print(text, options)` wraps text to the printer page width, creates as many pages as needed, and returns `true, { printer, pages, lines }`.
+
+Errors include:
+
+- `DesktopRequired`
+- `PrinterDriverUnavailable`
+- `PrinterNotFound`
+- `NewPageFailed`
+- `EndPageFailed`
 
 ## Recommended App Pattern
 

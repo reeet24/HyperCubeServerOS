@@ -106,12 +106,31 @@ local function ensure_state(state)
     state.status = nil
 end
 
+local function device_allowed(item)
+    local devices = item and item.devices
+    if type(devices) ~= "table" or #devices == 0 then
+        return true
+    end
+    local device = api.device and api.device.type or ""
+    for _, allowed in ipairs(devices) do
+        if tostring(allowed or "") == tostring(device or "") then
+            return true
+        end
+    end
+    return false
+end
+
 local function refresh(state)
     local reply, err = request({
         type = "appstore.list",
     }, "appstore.list.result")
     if reply and reply.ok then
-        state.catalog = reply.result and reply.result.apps or {}
+        state.catalog = {}
+        for _, item in ipairs(reply.result and reply.result.apps or {}) do
+            if device_allowed(item) then
+                state.catalog[#state.catalog + 1] = item
+            end
+        end
         state.loaded = true
         state.error = nil
         if state.selected > #state.catalog then

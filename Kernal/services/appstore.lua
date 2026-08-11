@@ -317,7 +317,28 @@ local function public_item(item)
         file_count = item.file_count,
         protected_file_count = item.protected_file_count,
         mutable_paths = item.mutable_paths,
+        devices = item.devices,
     }
+end
+
+local function normalize_devices(devices)
+    if type(devices) ~= "table" then
+        return nil
+    end
+    local out = {}
+    local seen = {}
+    for _, device in ipairs(devices) do
+        device = tostring(device or ""):gsub("^%s*(.-)%s*$", "%1")
+        if device ~= "" and not seen[device] then
+            seen[device] = true
+            out[#out + 1] = device
+        end
+    end
+    table.sort(out)
+    if #out == 0 then
+        return nil
+    end
+    return out
 end
 
 local function default_manifest(id)
@@ -361,6 +382,7 @@ local function save_manifest(app_dir, item)
         render_mode = item.render_mode,
         refresh_rate = item.refresh_rate or item.fps or item.frame_rate,
         mutable_paths = normalize_mutable_paths(item.mutable_paths or item.mutable or item.unchecked_paths or item.mod_paths),
+        devices = normalize_devices(item.devices or item.device_types or item.supported_devices),
     }
     return write_all(manifest_path(app_dir), serialize(manifest))
 end
@@ -427,6 +449,7 @@ local function manifest_for_db(item, files)
         render_mode = item.render_mode,
         refresh_rate = item.refresh_rate or item.fps or item.frame_rate,
         mutable_paths = normalize_mutable_paths(item.mutable_paths or item.mutable or item.unchecked_paths or item.mod_paths),
+        devices = normalize_devices(item.devices or item.device_types or item.supported_devices),
         files = {},
         file_count = #files,
         updated_at = now(),
@@ -461,6 +484,7 @@ local function db_manifest_to_item(manifest)
         render_mode = manifest.render_mode,
         refresh_rate = manifest.refresh_rate,
         mutable_paths = manifest.mutable_paths or {},
+        devices = manifest.devices,
         file_count = manifest.file_count or #(manifest.files or {}),
         updated_at = manifest.updated_at,
     }
@@ -772,6 +796,7 @@ function appstore.install(hypercube)
                     file_count = item.file_count,
                     protected_file_count = item.protected_file_count,
                     mutable_paths = item.mutable_paths,
+                    devices = item.devices,
                     integrity_encoded = item.integrity_encoded,
                 })
             else

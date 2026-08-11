@@ -391,6 +391,10 @@ function TPhone:check_for_updates()
 end
 
 function TPhone:install_app(package)
+    if app_manager.device_allowed and not app_manager.device_allowed(package and (package.devices or package.device_types or package.supported_devices), self.device) then
+        logger.warn("app install blocked incompatible device " .. tostring(package and package.id), self.root_context)
+        return false, "DeviceNotSupported"
+    end
     local ok, result = app_manager.install(package)
     if ok then
         self.apps_dirty = true
@@ -402,6 +406,10 @@ function TPhone:install_app(package)
 end
 
 function TPhone:install_dev_app(package)
+    if app_manager.device_allowed and not app_manager.device_allowed(package and (package.devices or package.device_types or package.supported_devices), self.device) then
+        logger.warn("dev app install blocked incompatible device " .. tostring(package and package.id), self.root_context)
+        return false, "DeviceNotSupported"
+    end
     local ok, result = app_manager.install_dev(package)
     if ok then
         self.apps_dirty = true

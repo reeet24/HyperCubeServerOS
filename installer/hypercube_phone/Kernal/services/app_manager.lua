@@ -35,8 +35,22 @@ local function copy_manifest(manifest, id, path)
         dock = manifest.dock == true,
         render_mode = render_mode,
         refresh_rate = manifest.refresh_rate or manifest.fps or manifest.frame_rate,
+        devices = manifest.devices or manifest.device_types or manifest.supported_devices,
         path = path,
     }
+end
+
+local function device_allowed(devices, device)
+    if type(devices) ~= "table" or #devices == 0 then
+        return true
+    end
+    device = tostring(device or "")
+    for _, allowed in ipairs(devices) do
+        if tostring(allowed or "") == device then
+            return true
+        end
+    end
+    return false
 end
 
 local function safe_id(id)
@@ -480,6 +494,9 @@ function app_manager.load_all(tphone)
         if app and app.manifest and app.manifest.dev_mode and not (tphone and tphone.dev_mode) then
             app = nil
             hidden = true
+        elseif app and app.manifest and not device_allowed(app.manifest.devices, tphone and tphone.device) then
+            app = nil
+            hidden = true
         end
         if app then
             apps[#apps + 1] = app
@@ -652,6 +669,8 @@ function app_manager.install(package)
         mutable_paths = integrity.mutable_paths or {},
     }
 end
+
+app_manager.device_allowed = device_allowed
 
 function app_manager.install_dev(package)
     local id, install_files, err = prepare_install_files(package)
