@@ -433,6 +433,39 @@ local function make_screen_api(tphone)
         return true
     end
 
+    function screen_api.line(x1, y1, x2, y2, color, fg, char)
+        if not tphone.screen then
+            return false, "ScreenUnavailable"
+        end
+        if not tphone.screen.line then
+            return false, "PrimitiveUnavailable"
+        end
+        tphone.screen:line(x1, y1, x2, y2, char or " ", fg, color)
+        return true
+    end
+
+    function screen_api.tri(x1, y1, x2, y2, x3, y3, color, fg, char)
+        if not tphone.screen then
+            return false, "ScreenUnavailable"
+        end
+        if not tphone.screen.tri then
+            return false, "PrimitiveUnavailable"
+        end
+        tphone.screen:tri(x1, y1, x2, y2, x3, y3, color, fg, char)
+        return true
+    end
+
+    function screen_api.quad(x1, y1, x2, y2, x3, y3, x4, y4, color, fg, char)
+        if not tphone.screen then
+            return false, "ScreenUnavailable"
+        end
+        if not tphone.screen.quad then
+            return false, "PrimitiveUnavailable"
+        end
+        tphone.screen:quad(x1, y1, x2, y2, x3, y3, x4, y4, color, fg, char)
+        return true
+    end
+
     function screen_api.button(id, x, y, width, label, options)
         if not tphone.screen then
             return nil, "ScreenUnavailable"
@@ -720,6 +753,50 @@ end
 local function is_desktop_device(tphone)
     local device = tostring(tphone and tphone.device or "")
     return device == "TDesktop" or device == "TBusinessDesktop"
+end
+
+local function storage_stats(path)
+    path = tostring(path or "/")
+    return {
+        path = path,
+        free_space = fs and fs.getFreeSpace and fs.getFreeSpace(path) or nil,
+        capacity = fs and fs.getCapacity and fs.getCapacity(path) or nil,
+    }
+end
+
+local function connected_drive_storage()
+    local out = {}
+    if not peripheral or not peripheral.getNames then
+        return out
+    end
+    for _, name in ipairs(peripheral.getNames()) do
+        local ok, kind = pcall(peripheral.getType, name)
+        local is_drive = ok and (kind == "drive" or (type(kind) == "table" and kind.drive))
+        if is_drive then
+            local mount
+            if disk and disk.isPresent and disk.isPresent(name) and disk.getMountPath then
+                local has_data = not disk.hasData or disk.hasData(name) ~= false
+                if has_data then
+                    mount = disk.getMountPath(name)
+                end
+            end
+            local info = {
+                name = name,
+                present = mount ~= nil,
+                mount = mount,
+            }
+            if mount then
+                local stats = storage_stats(mount)
+                info.free_space = stats.free_space
+                info.capacity = stats.capacity
+            end
+            out[#out + 1] = info
+        end
+    end
+    table.sort(out, function(a, b)
+        return tostring(a.name) < tostring(b.name)
+    end)
+    return out
 end
 
 local function make_printer_api(tphone)
@@ -1256,11 +1333,12 @@ local function make_dev_api(tphone)
     local function completions(prefix)
         prefix = tostring(prefix or "")
         local words = {
-            "HCAPI.screen.write", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.wrap",
+            "HCAPI.screen.write", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.line", "HCAPI.screen.tri",
+            "HCAPI.screen.quad", "HCAPI.screen.wrap",
             "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.storage.read", "HCAPI.storage.write",
             "HCAPI.storage.info", "HCAPI.userfs.read", "HCAPI.userfs.write",
             "HCAPI.desktop.open_popup", "HCAPI.desktop.open_terminal", "HCAPI.desktop.open_file", "HCAPI.desktop.drives",
-            "HCAPI.bank.purchase", "HCAPI.phone.send", "app.render", "app.on_key", "app.on_touch", "app.on_tick",
+            "HCAPI.device.storage", "HCAPI.bank.purchase", "HCAPI.phone.send", "app.render", "app.on_key", "app.on_touch", "app.on_tick",
         }
         local out = {}
         for _, word in ipairs(words) do
@@ -1353,6 +1431,20 @@ local function make_device_api(tphone)
         os = tphone and tphone.name or nil,
         type = tphone and tphone.device or nil,
         desktop = is_desktop_device(tphone),
+        storage = function()
+            local internal = storage_stats("/")
+            internal.name = "Device"
+            local drives
+            if is_desktop_device(tphone) and desktop_storage_ok and desktop_storage and desktop_storage.list_drives then
+                drives = desktop_storage.list_drives()
+            else
+                drives = connected_drive_storage()
+            end
+            return {
+                internal = internal,
+                drives = drives,
+            }
+        end,
         shutdown = function()
             if tphone and tphone.shutdown then
                 tphone.shutdown("settings")

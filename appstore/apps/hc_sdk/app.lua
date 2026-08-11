@@ -13,7 +13,8 @@ local app = {
 local DOC_IDS = { "desktop-sdk", "userapp-api", "banking-api", "web-api", "user-server-api" }
 local MENU_ACTIONS = { "projects", "manifest", "docs", "api", "build", "save", "install", "run", "term" }
 local API_WORDS = {
-    "HCAPI.screen.write", "HCAPI.screen.write_wrap", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.wrap",
+    "HCAPI.screen.write", "HCAPI.screen.write_wrap", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.line",
+    "HCAPI.screen.tri", "HCAPI.screen.quad", "HCAPI.screen.wrap",
     "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.fs.delete",
     "HCAPI.userfs.read", "HCAPI.userfs.write", "HCAPI.userfs.mkdir", "HCAPI.userfs.list", "HCAPI.userfs.delete",
     "HCAPI.desktop.open_app", "HCAPI.desktop.open_popup", "HCAPI.desktop.open_terminal", "HCAPI.desktop.set_title",

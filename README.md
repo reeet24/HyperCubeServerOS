@@ -274,7 +274,7 @@ Phone built-in apps live in `installer/hypercube_phone/apps` and include app sto
 
 ## App Screen API
 
-Phone apps receive `HCAPI.screen`, which includes primitive drawing helpers plus `api.screen.manager(default_screen)`.
+Phone apps receive `HCAPI.screen`, which includes primitive drawing helpers plus `api.screen.manager(default_screen)`. Desktop-capable apps can also use `screen.line`, `screen.tri`, and `screen.quad` for faster filled scene primitives.
 
 Use the manager when an app has multiple pages. Define each page once with `render`, `on_touch`, and `on_key`, then switch the active page with `manager:set("page_id")`.
 

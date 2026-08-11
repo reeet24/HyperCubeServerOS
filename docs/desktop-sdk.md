@@ -144,6 +144,9 @@ Press `Tab` in Terminal to show completions for common APIs such as:
 
 - `HCAPI.screen.write`
 - `HCAPI.screen.button`
+- `HCAPI.screen.line`
+- `HCAPI.screen.tri`
+- `HCAPI.screen.quad`
 - `HCAPI.fs.read`
 - `HCAPI.storage.write`
 - `HCAPI.userfs.write`

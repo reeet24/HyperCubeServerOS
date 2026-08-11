@@ -16,6 +16,36 @@ local function write_line(ctx, row, text, fg)
     api.screen.write(ctx.x, ctx.y + row, text, fg or C.white, C.black)
 end
 
+local function format_space(value)
+    if value == nil then
+        return "?"
+    end
+    if value == "unlimited" then
+        return "unlimited"
+    end
+    value = tonumber(value)
+    if not value then
+        return "?"
+    end
+    if value >= 1024 * 1024 then
+        return tostring(math.floor(value / (1024 * 1024) * 10 + 0.5) / 10) .. " MB"
+    end
+    if value >= 1024 then
+        return tostring(math.floor(value / 1024 * 10 + 0.5) / 10) .. " KB"
+    end
+    return tostring(value) .. " B"
+end
+
+local function storage_line(info)
+    info = type(info) == "table" and info or {}
+    local free = format_space(info.free_space)
+    local capacity = format_space(info.capacity)
+    if capacity == "?" or capacity == "unlimited" then
+        return free .. " free"
+    end
+    return free .. " / " .. capacity .. " free"
+end
+
 local function is_ctrl(key)
     return key == keys.leftCtrl
         or key == keys.rightCtrl
@@ -48,23 +78,63 @@ end
 
 function app.render(ctx)
     local state = ctx.state
+    local row = 2
 
     ctx.buttons.shutdown = api.screen.button("shutdown", ctx.x, ctx.y, 12, "Shutdown", {
         fg = C.white,
         bg = C.red,
     })
-    write_line(ctx, 2, "Device: TPhone")
-    write_line(ctx, 3, "OS: HyperCube")
-    write_line(ctx, 4, "App sandbox: HCAPI")
-    write_line(ctx, 5, "Storage: encrypted HCFS")
+    write_line(ctx, row, "Device: " .. tostring(api.device and api.device.type or "TPhone"))
+    row = row + 1
+    write_line(ctx, row, "OS: HyperCube")
+    row = row + 1
+    write_line(ctx, row, "App sandbox: HCAPI")
+    row = row + 1
+    write_line(ctx, row, "Storage: encrypted HCFS")
+    row = row + 2
+
+    write_line(ctx, row, "Space", C.cyan)
+    row = row + 1
+    local storage = api.device and api.device.storage and api.device.storage() or nil
+    if storage and storage.internal then
+        write_line(ctx, row, "Device: " .. storage_line(storage.internal), C.lightGray)
+        row = row + 1
+    else
+        write_line(ctx, row, "Device: unavailable", C.orange)
+        row = row + 1
+    end
+    local drives = storage and storage.drives or {}
+    if #drives > 0 then
+        for _, drive in ipairs(drives) do
+            if row >= ctx.height - 2 then
+                write_line(ctx, row, "+" .. tostring(#drives) .. " drives", C.lightGray)
+                row = row + 1
+                break
+            end
+            local label = tostring(drive.label or drive.name or "Drive")
+            if drive.mount then
+                write_line(ctx, row, label .. ": " .. storage_line(drive), drive.formatted == false and C.orange or C.lightGray)
+            else
+                write_line(ctx, row, label .. ": no disk", C.orange)
+            end
+            row = row + 1
+        end
+    else
+        write_line(ctx, row, "Drives: none connected", C.lightGray)
+        row = row + 1
+    end
+
     if api.dev and api.dev.is_enabled and api.dev.is_enabled() then
-        write_line(ctx, 7, "Developer mode: ON", C.yellow)
-        write_line(ctx, 8, "Terminal enabled", C.lightGray)
+        row = row + 1
+        write_line(ctx, row, "Developer mode: ON", C.yellow)
+        write_line(ctx, row + 1, "Terminal enabled", C.lightGray)
     elseif state.dev_combo_started_at then
         local remaining = math.max(0, 10 - math.floor(unlock_progress(state) / 1000))
-        write_line(ctx, 7, "Developer unlock " .. tostring(remaining), C.lightGray)
+        row = row + 1
+        write_line(ctx, row, "Developer unlock " .. tostring(remaining), C.lightGray)
     elseif state.dev_message then
-        write_line(ctx, 7, state.dev_message, C.lightGray)
+        row = row + 1
+        write_line(ctx, row, state.dev_message, C.lightGray)
     end
 end
 

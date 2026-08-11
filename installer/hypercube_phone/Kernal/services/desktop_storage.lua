@@ -157,6 +157,7 @@ function desktop_storage.list_drives()
                 info.apps_path = paths.apps
                 info.appdata_path = paths.appdata
                 info.free_space = fs.getFreeSpace and fs.getFreeSpace(mount) or nil
+                info.capacity = fs.getCapacity and fs.getCapacity(mount) or nil
             end
         end
         out[#out + 1] = info

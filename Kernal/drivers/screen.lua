@@ -26,6 +26,18 @@ local function clamp(value, min_value, max_value)
     return value
 end
 
+local function ordered(a, b)
+    if a <= b then
+        return a, b
+    end
+    return b, a
+end
+
+local function rounded(value)
+    value = tonumber(value) or 0
+    return math.floor(value + 0.5)
+end
+
 local function find_monitor(side)
     if side and peripheral and peripheral.wrap then
         local wrapped = peripheral.wrap(side)
@@ -205,6 +217,118 @@ end
 
 function Screen:rect(x, y, width, height, bg)
     return self:fill(x, y, width, height, " ", self.fg, bg or self.bg)
+end
+
+function Screen:hline(x1, x2, y, char, fg, bg)
+    self:resize_if_needed()
+    y = math.floor(tonumber(y) or 0)
+    if y < 1 or y > self.height then
+        return self
+    end
+    x1, x2 = ordered(math.floor(tonumber(x1) or 0), math.floor(tonumber(x2) or 0))
+    x1 = math.max(1, x1)
+    x2 = math.min(self.width, x2)
+    if x2 < x1 then
+        return self
+    end
+    char = char or " "
+    fg = fg or self.fg
+    bg = bg or self.bg
+    for x = x1, x2 do
+        self.buffer[y][x] = make_cell(fg, bg, char)
+    end
+    self.dirty = true
+    return self
+end
+
+function Screen:line(x1, y1, x2, y2, char, fg, bg)
+    x1 = math.floor(tonumber(x1) or 0)
+    y1 = math.floor(tonumber(y1) or 0)
+    x2 = math.floor(tonumber(x2) or 0)
+    y2 = math.floor(tonumber(y2) or 0)
+    char = char or " "
+    local dx = math.abs(x2 - x1)
+    local sx = x1 < x2 and 1 or -1
+    local dy = -math.abs(y2 - y1)
+    local sy = y1 < y2 and 1 or -1
+    local err = dx + dy
+    while true do
+        self:plot(x1, y1, char, fg, bg)
+        if x1 == x2 and y1 == y2 then
+            break
+        end
+        local e2 = 2 * err
+        if e2 >= dy then
+            err = err + dy
+            x1 = x1 + sx
+        end
+        if e2 <= dx then
+            err = err + dx
+            y1 = y1 + sy
+        end
+    end
+    return self
+end
+
+local function edge_intersections(y, points)
+    local xs = {}
+    for i = 1, #points do
+        local a = points[i]
+        local b = points[i == #points and 1 or i + 1]
+        local y1, y2 = a.y, b.y
+        if y1 ~= y2 then
+            local min_y, max_y = ordered(y1, y2)
+            if y >= min_y and y < max_y then
+                local t = (y - y1) / (y2 - y1)
+                xs[#xs + 1] = a.x + t * (b.x - a.x)
+            end
+        end
+    end
+    table.sort(xs)
+    return xs
+end
+
+function Screen:poly(points, char, fg, bg)
+    if type(points) ~= "table" or #points < 3 then
+        return self
+    end
+    self:resize_if_needed()
+    local normalized = {}
+    local min_y = self.height
+    local max_y = 1
+    for _, point in ipairs(points) do
+        local x = tonumber(point.x or point[1]) or 0
+        local y = tonumber(point.y or point[2]) or 0
+        normalized[#normalized + 1] = { x = x, y = y }
+        min_y = math.min(min_y, math.floor(y))
+        max_y = math.max(max_y, math.ceil(y))
+    end
+    min_y = math.max(1, min_y)
+    max_y = math.min(self.height, max_y)
+    for y = min_y, max_y do
+        local xs = edge_intersections(y + 0.5, normalized)
+        for i = 1, #xs - 1, 2 do
+            self:hline(rounded(xs[i]), rounded(xs[i + 1]), y, char, fg, bg)
+        end
+    end
+    return self
+end
+
+function Screen:tri(x1, y1, x2, y2, x3, y3, bg, fg, char)
+    return self:poly({
+        { x = x1, y = y1 },
+        { x = x2, y = y2 },
+        { x = x3, y = y3 },
+    }, char or " ", fg or self.fg, bg or self.bg)
+end
+
+function Screen:quad(x1, y1, x2, y2, x3, y3, x4, y4, bg, fg, char)
+    return self:poly({
+        { x = x1, y = y1 },
+        { x = x2, y = y2 },
+        { x = x3, y = y3 },
+        { x = x4, y = y4 },
+    }, char or " ", fg or self.fg, bg or self.bg)
 end
 
 function Screen:border(x, y, width, height, fg, bg)

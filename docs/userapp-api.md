@@ -214,6 +214,18 @@ true, lines
 
 Fills a rectangle with `bg`.
 
+### `api.screen.line(x1, y1, x2, y2, color, fg, char)`
+
+Draws a line between two points. `color` is the background color for each drawn cell. `fg` and `char` are optional; when omitted the line is drawn with spaces and only changes background color.
+
+### `api.screen.tri(x1, y1, x2, y2, x3, y3, color, fg, char)`
+
+Fills a triangle. Coordinates are screen-cell coordinates, so this is best for fast stylized graphics, charts, and simple game scenes rather than pixel-perfect images.
+
+### `api.screen.quad(x1, y1, x2, y2, x3, y3, x4, y4, color, fg, char)`
+
+Fills a four-point polygon using the same renderer as `tri`. Pass points in clockwise or counter-clockwise order for predictable results. Concave or self-crossing quads are not guaranteed to fill the way you expect.
+
 ### `api.screen.button(id, x, y, width, label, options)`
 
 Draws a button and registers its hit area.
