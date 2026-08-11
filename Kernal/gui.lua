@@ -204,9 +204,21 @@ local function draw_installer(screen, hypercube, state, width, y, height)
 
     local selected, drives = hypercube.installer:selected_drive()
     local source_profile = hypercube.installer.source_profile and hypercube.installer:source_profile() or { device = "TPhone" }
+    local cache = hypercube.installer.github_cache_status and hypercube.installer:github_cache_status() or nil
     local image_status = fs and fs.exists and fs.exists("installer/hypercube_phone") and "ready" or "missing"
     image_status = fs and fs.exists and fs.exists(hypercube.installer.source) and "ready" or "missing"
-    add_text("Image: " .. tostring(hypercube.installer.source) .. " (" .. image_status .. ")", image_status == "ready" and C.green or C.red)
+    if cache and cache.source_mode == "github" then
+        image_status = cache.cached and "cached" or "github"
+    end
+    add_text("Image: " .. tostring(hypercube.installer.source) .. " (" .. image_status .. ")",
+        (image_status == "ready" or image_status == "cached" or image_status == "github") and C.green or C.red)
+    if cache then
+        local cache_label = cache.cached and ("cached " .. tostring(cache.cached_files or 0) .. " files") or "not cached"
+        add_text("Installer source: " .. tostring(cache.source_mode or "auto") .. " / GitHub " .. cache_label, cache.cached and C.green or C.lightGray)
+        if cache.cached and cache.tree_hash then
+            add_text("Installer hash: " .. tostring(cache.tree_hash):sub(1, 12), C.lightGray)
+        end
+    end
     add_text("Device: " .. tostring(source_profile.device or "TPhone"), C.white)
     add_text("Detected drives: " .. tostring(#drives), C.white)
 
@@ -610,6 +622,13 @@ local CONFIG_FIELDS = {
     { key = "db.root", label = "DB root", kind = "string" },
     { key = "db.min_replicas", label = "DB replicas", kind = "number" },
     { key = "installer.root", label = "Installer root", kind = "string" },
+    { key = "installer.source_mode", label = "Installer mode", kind = "string" },
+    { key = "installer.github.owner", label = "GitHub owner", kind = "string" },
+    { key = "installer.github.repo", label = "GitHub repo", kind = "string" },
+    { key = "installer.github.branch", label = "GitHub branch", kind = "string" },
+    { key = "installer.github.root", label = "GitHub root", kind = "string" },
+    { key = "installer.github.cache_ttl_ms", label = "Cache TTL ms", kind = "number" },
+    { key = "installer.github.hash_check_ms", label = "Hash check ms", kind = "number" },
     { key = "appstore.root", label = "App Store root", kind = "string" },
     { key = "appstore.db_root", label = "App DB root", kind = "string" },
     { key = "appstore.min_replicas", label = "App DB replicas", kind = "number" },
@@ -980,7 +999,15 @@ local function ensure_screen_manager(state, hypercube)
                     if hypercube.appstore and hypercube.appstore.configure_database then
                         hypercube.appstore.configure_database(hypercube.config)
                     end
-                    cfg_state.message = "Saved server_config."
+                    local cleanup_note = ""
+                    if tostring(result and result.installer and result.installer.source_mode or "") == "github"
+                        and hypercube.server_config.delete_local_installer then
+                        local clean_ok, deleted = hypercube.server_config.delete_local_installer(result)
+                        if clean_ok then
+                            cleanup_note = " Deleted installer copies: " .. tostring(deleted or 0) .. "."
+                        end
+                    end
+                    cfg_state.message = "Saved server_config." .. cleanup_note
                     if hypercube.logger then
                         hypercube.logger.warn("server_config saved from GUI", hypercube.root_context)
                     end

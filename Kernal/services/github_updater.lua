@@ -148,11 +148,35 @@ local function load_server_config()
     return {
         installer = {
             root = "installer",
+            source_mode = "auto",
         },
     }
 end
 
-local function local_path(path, config)
+local local_path
+
+local function installer_hosted_on_github(config)
+    config = config or load_server_config()
+    local mode = tostring(config and config.installer and config.installer.source_mode or "auto")
+    return mode == "github"
+end
+
+local function cleanup_github_installer_source(config)
+    if not installer_hosted_on_github(config) then
+        return true, 0
+    end
+    if config_ok and server_config and server_config.delete_local_installer then
+        return server_config.delete_local_installer(config)
+    end
+    local target = local_path("installer", config)
+    if fs.exists(target) then
+        fs.delete(target)
+        return true, 1
+    end
+    return true, 0
+end
+
+function local_path(path, config)
     path = normalize(path)
     config = config or load_server_config()
     if config_ok and server_config and server_config.local_path then
@@ -427,6 +451,9 @@ end
 local function include_relative(path)
     path = normalize(path)
     if path == "" or is_excluded(path) or not is_safe_relative(path) then
+        return false
+    end
+    if installer_hosted_on_github() and (path == "installer" or path:sub(1, 10) == "installer/") then
         return false
     end
     for _, root in ipairs(INCLUDE_ROOTS) do
@@ -1006,6 +1033,7 @@ function github_updater.install(status, options)
         status = result
     end
     if status.up_to_date then
+        cleanup_github_installer_source(load_server_config())
         return true, { already_current = true }
     end
     if status.error then
@@ -1017,6 +1045,7 @@ function github_updater.install(status, options)
         if not ok then
             return false, err
         end
+        cleanup_github_installer_source(load_server_config())
         write_install_record(status.branch, status.remote_root, #(status.changes or {}), status.head_sha)
         return true, {
             mode = "patch",
@@ -1043,6 +1072,7 @@ function github_updater.install(status, options)
             fs.delete(target)
         end
     end
+    cleanup_github_installer_source(load_server_config())
     for _, file in ipairs(files) do
         local ok, err = write_file(file.path, file.data)
         if not ok then
@@ -1140,6 +1170,7 @@ local can_try_patch = not has_flag("--full")
 if can_try_patch then
     local base_sha = tostring(install_record.commit_sha)
     if base_sha == head_sha then
+        cleanup_github_installer_source(load_server_config())
         print("")
         print("Already up to date.")
         return
@@ -1185,6 +1216,7 @@ if can_try_patch then
             return
         end
 
+        cleanup_github_installer_source(load_server_config())
         write_install_record(branch, remote_root, #changes, head_sha)
         print("")
         print("Patch update complete.")
@@ -1246,6 +1278,7 @@ for _, path in ipairs(CLEAN_PATHS) do
         fs.delete(target)
     end
 end
+cleanup_github_installer_source(load_server_config())
 
 print("Writing files...")
 for index, file in ipairs(files) do

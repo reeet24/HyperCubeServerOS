@@ -241,13 +241,14 @@ The default authorized account is `tesserac`.
 
 `software_updates.lua` and `installer.lua` keep phone ROMs aligned with the server.
 
-1. Server packages deterministic install images from `installer/hypercube_phone`.
-2. Server stores the expected phone ROM checksum.
+1. Server packages deterministic install images from local `installer/...` source or from the GitHub-backed in-memory installer cache.
+2. Server stores the expected phone ROM checksum and refreshes it when update metadata/package requests rebuild the phone ROM.
 3. Phone asks `update.status`.
 4. If needed, phone downloads chunks with `update.download` and `update.chunk`.
 5. Phone verifies checksum before writing the new ROM and rebooting.
 
 `update.*` remains available even when a phone is rejected for ROM mismatch.
+When `server_config.installer.source_mode` is `github`, the server updater skips local `installer/...` files. `installer.lua` checks the configured GitHub installer tree hash, downloads the installer tree into memory only when needed, and drops the cache after the configured idle timeout.
 
 ## Where To Add New Work
 

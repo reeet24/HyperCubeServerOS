@@ -534,6 +534,7 @@ Desktop apps also receive `api.userfs` and `api.desktop`. Phone apps should cont
 
 - `api.userfs.read(path)` returns file text or `nil, err`.
 - `api.userfs.write(path, data)` writes text, creating parent folders as needed.
+- `api.userfs.mkdir(path)` creates a folder, creating parent folders as needed.
 - `api.userfs.list(path)` lists child names in a folder.
 - `api.userfs.stat(path)` returns `{ path, name, kind, size, updated_at }`.
 - `api.userfs.exists(path)` returns a boolean.
@@ -553,6 +554,8 @@ Desktop apps can also ask the window manager to adjust their current window:
 When an app is running inside the desktop window manager, render and event callbacks include `ctx.desktop = true` and `ctx.window = { id, app_id, fullscreen, minimized, width, height }`. Existing phone apps can still run because the normal `ctx.x`, `ctx.y`, `ctx.width`, `ctx.height`, `ctx.buttons`, and `ctx.state` fields are unchanged.
 
 `api.desktop.open_popup(kind, options)` opens a focused child window for the current app. `options` may include `{ title, width, height, x, y, data }`. Popup callbacks receive `ctx.window.popup = true`, `ctx.window.popup_kind`, `ctx.window.popup_data`, and `ctx.window.parent_id`. Use this for context menus, pickers, and short modal workflows. A popup can close itself with `api.desktop.close()`.
+
+Users can move desktop windows by dragging the title bar. Apps do not need to implement dragging themselves.
 
 ## Recommended App Pattern
 

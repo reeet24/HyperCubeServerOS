@@ -38,6 +38,15 @@ local function update_metadata_for_request(hypercube, message)
     return update_metadata(hypercube)
 end
 
+local function record_metadata(hypercube, metadata)
+    if type(metadata) ~= "table" or not hypercube.network then
+        return
+    end
+    if tostring(metadata.device or "TPhone") == "TPhone" and metadata.rom_checksum then
+        hypercube.network.expected_phone_rom_checksum = tostring(metadata.rom_checksum)
+    end
+end
+
 local function build_package_for_request(hypercube, message)
     local device = tostring(message and message.device or "TPhone")
     if hypercube.installer and hypercube.installer.build_update_package_for_device then
@@ -72,6 +81,9 @@ function software_updates.install(hypercube)
         if message.type == "update.status" then
             local current = tostring(message.version or "")
             local metadata_ok, metadata = update_metadata_for_request(hypercube, message)
+            if metadata_ok then
+                record_metadata(hypercube, metadata)
+            end
             reply(rednet, sender, network.protocol, "update.status.result", true, {
                 os = metadata_ok and metadata.os or tostring(message.os or "HyperCube"),
                 device = metadata_ok and metadata.device or tostring(message.device or "TPhone"),
@@ -86,6 +98,7 @@ function software_updates.install(hypercube)
             if ok then
                 local rom_data = result.rom_data or ""
                 local device = result.device or tostring(message.device or "TPhone")
+                record_metadata(hypercube, result)
                 result.rom_data = nil
                 result.chunk_size = CHUNK_SIZE
                 result.size = #rom_data
@@ -106,6 +119,7 @@ function software_updates.install(hypercube)
                 if ok then
                     local rom_data = result.rom_data or ""
                     local device = result.device or requested_device
+                    record_metadata(hypercube, result)
                     result.rom_data = nil
                     result.chunk_size = CHUNK_SIZE
                     result.size = #rom_data
@@ -154,6 +168,11 @@ function software_updates.start(hypercube)
         return false, err
     end
     while true do
+        if hypercube.installer and hypercube.installer.prune_github_cache and hypercube.installer:prune_github_cache() then
+            if hypercube.logger then
+                hypercube.logger.info("github installer source cache expired", hypercube.root_context)
+            end
+        end
         coroutine.yield("tick")
     end
 end

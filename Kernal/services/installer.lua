@@ -32,6 +32,9 @@ local SOURCE_PROFILES = {
         os = "HyperCubeUserServer",
         device = "UserServer",
         bootstrap = true,
+        patch_sources = {
+            "installer/hypercube_phone",
+        },
     },
 }
 local INSTALL_PATHS = {
@@ -44,10 +47,20 @@ local INSTALL_PATHS = {
 local BASE_ROM_PATHS = {
     "Kernal",
 }
+local PATCH_ROOT = "patches"
 local ROM_FILE = "hypercube.rom"
 local ROM_KEY = "Tesserac:HyperCube:BankOfBash:ROM:v1"
 local ROM_HEADER = "HCBR1"
 local SOFTWARE_VERSION = "0.3.5"
+local GITHUB_DEFAULTS = {
+    owner = "reeet24",
+    repo = "HyperCubeServerOS",
+    branch = "main",
+    root = "computer/0",
+    cache_ttl_ms = 600000,
+    hash_check_ms = 60000,
+}
+local github_cache = nil
 
 local function checksum(text)
     text = tostring(text or "")
@@ -75,6 +88,319 @@ local function combine(a, b)
         return a .. b
     end
     return a .. "/" .. b
+end
+
+local function normalize_path(path)
+    path = tostring(path or ""):gsub("\\", "/")
+    path = path:gsub("^%./", ""):gsub("^/+", "")
+    path = path:gsub("//+", "/")
+    if path == "." then
+        return ""
+    end
+    return path
+end
+
+local function trim(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$")
+end
+
+local function read_file_trim(path)
+    if not fs or not fs.exists or not fs.open or not fs.exists(path) then
+        return nil
+    end
+    local handle = fs.open(path, "r")
+    if not handle then
+        return nil
+    end
+    local data = trim(handle.readAll())
+    handle.close()
+    if data == "" then
+        return nil
+    end
+    return data
+end
+
+local function encode_segment(segment)
+    segment = tostring(segment or "")
+    return segment:gsub("([^%w%-%_%.%~])", function(char)
+        return string.format("%%%02X", char:byte())
+    end)
+end
+
+local function encode_path(path)
+    path = normalize_path(path)
+    if path == "" then
+        return ""
+    end
+    local out = {}
+    for segment in path:gmatch("[^/]+") do
+        out[#out + 1] = encode_segment(segment)
+    end
+    return table.concat(out, "/")
+end
+
+local function github_http_get(url, accept)
+    if not http or not http.get then
+        return nil, "HttpUnavailable"
+    end
+    local headers = {
+        ["User-Agent"] = "HyperCubeServerOS-Installer",
+        ["Accept"] = accept or "application/vnd.github+json",
+    }
+    local token = read_file_trim("github_token")
+    if token then
+        headers.Authorization = "Bearer " .. token
+    end
+    local ok, response_or_err, request_err = pcall(http.get, url, headers)
+    if not ok then
+        return nil, response_or_err
+    end
+    local response = response_or_err
+    if not response and tostring(request_err or ""):lower():match("header") then
+        ok, response_or_err, request_err = pcall(http.get, url)
+        if not ok then
+            return nil, response_or_err
+        end
+        response = response_or_err
+    end
+    if not response then
+        return nil, request_err or "HttpRequestFailed"
+    end
+    local body = response.readAll()
+    local code = response.getResponseCode and response.getResponseCode() or 200
+    response.close()
+    if tonumber(code) and tonumber(code) >= 400 then
+        return nil, "Http" .. tostring(code) .. ":" .. tostring(body):sub(1, 100)
+    end
+    return body
+end
+
+local function decode_json(text)
+    if not textutils or not textutils.unserializeJSON then
+        return nil, "JsonUnavailable"
+    end
+    local ok, decoded = pcall(textutils.unserializeJSON, text)
+    if not ok or decoded == nil then
+        return nil, ok and "JsonDecodeFailed" or decoded
+    end
+    return decoded
+end
+
+local function installer_config()
+    if config_ok and server_config and server_config.load then
+        local ok, config = pcall(server_config.load)
+        if ok and type(config) == "table" then
+            return config.installer or {}
+        end
+    end
+    return {}
+end
+
+local function github_config()
+    local cfg = installer_config()
+    local github = cfg.github or {}
+    return {
+        source_mode = tostring(cfg.source_mode or "auto"),
+        owner = tostring(github.owner or GITHUB_DEFAULTS.owner),
+        repo = tostring(github.repo or GITHUB_DEFAULTS.repo),
+        branch = tostring(github.branch or GITHUB_DEFAULTS.branch),
+        root = normalize_path(github.root or GITHUB_DEFAULTS.root),
+        cache_ttl_ms = tonumber(github.cache_ttl_ms) or GITHUB_DEFAULTS.cache_ttl_ms,
+        hash_check_ms = tonumber(github.hash_check_ms) or GITHUB_DEFAULTS.hash_check_ms,
+    }
+end
+
+local function repo_key(config)
+    return table.concat({
+        config.owner,
+        config.repo,
+        config.branch,
+        config.root,
+    }, ":")
+end
+
+local function github_api_base(config)
+    return "https://api.github.com/repos/" .. encode_segment(config.owner) .. "/" .. encode_segment(config.repo)
+end
+
+local function github_raw_url(config, repo_path)
+    local full = config.root ~= "" and combine(config.root, repo_path) or repo_path
+    return "https://raw.githubusercontent.com/" .. encode_segment(config.owner) .. "/" .. encode_segment(config.repo)
+        .. "/" .. encode_segment(config.branch) .. "/" .. encode_path(full)
+end
+
+local function fetch_installer_tree_hash(config)
+    local full = config.root ~= "" and combine(config.root, "installer") or "installer"
+    local url = github_api_base(config) .. "/contents/" .. encode_path(full) .. "?ref=" .. encode_segment(config.branch)
+    local body, err = github_http_get(url)
+    if not body then
+        return nil, err
+    end
+    local decoded, json_err = decode_json(body)
+    if not decoded then
+        return nil, json_err
+    end
+    if type(decoded) == "table" and decoded.sha then
+        return decoded.sha
+    end
+    return nil, "InstallerTreeHashMissing"
+end
+
+local function fetch_recursive_tree(config)
+    local url = github_api_base(config) .. "/git/trees/" .. encode_segment(config.branch) .. "?recursive=1"
+    local body, err = github_http_get(url)
+    if not body and config.branch == "main" then
+        url = github_api_base(config) .. "/git/trees/master?recursive=1"
+        body, err = github_http_get(url)
+        if body then
+            config.branch = "master"
+        end
+    end
+    if not body then
+        return nil, err
+    end
+    local decoded, json_err = decode_json(body)
+    if not decoded then
+        return nil, json_err
+    end
+    if type(decoded.tree) ~= "table" then
+        return nil, decoded.message or "GitTreeMissing"
+    end
+    return decoded
+end
+
+local function should_use_github(config, source)
+    if config.source_mode == "local" then
+        return false
+    end
+    if normalize_path(source):sub(1, 10) ~= "installer/" then
+        return false
+    end
+    if config.source_mode == "github" then
+        return true
+    end
+    if config_ok and server_config and server_config.local_paths then
+        local ok, loaded = pcall(server_config.load)
+        if ok and type(loaded) == "table" then
+            for _, candidate in ipairs(server_config.local_paths(loaded, source)) do
+                if fs.exists(candidate) then
+                    return false
+                end
+            end
+            return true
+        end
+    end
+    return not fs.exists(source)
+end
+
+local function expire_github_cache(config)
+    if github_cache and now() - tonumber(github_cache.last_used or 0) > config.cache_ttl_ms then
+        github_cache = nil
+    end
+end
+
+local function ensure_github_cache(source)
+    local config = github_config()
+    expire_github_cache(config)
+    if not should_use_github(config, source) then
+        return true, nil, false
+    end
+    local key = repo_key(config)
+    local current_hash
+    if github_cache and github_cache.key == key then
+        if now() - tonumber(github_cache.checked_at or 0) < config.hash_check_ms then
+            github_cache.last_used = now()
+            return true, github_cache, true
+        end
+        current_hash = fetch_installer_tree_hash(config)
+        if current_hash and current_hash == github_cache.tree_hash then
+            github_cache.checked_at = now()
+            github_cache.last_used = now()
+            return true, github_cache, true
+        end
+    end
+
+    current_hash = current_hash or fetch_installer_tree_hash(config)
+    if not current_hash then
+        return false, "GitHubInstallerHashUnavailable", true
+    end
+    local tree, tree_err = fetch_recursive_tree(config)
+    if not tree then
+        return false, tree_err, true
+    end
+    local files = {}
+    local root_prefix = config.root ~= "" and (config.root .. "/installer/") or "installer/"
+    for _, entry in ipairs(tree.tree or {}) do
+        local path = normalize_path(entry.path)
+        if entry.type == "blob" and path:sub(1, #root_prefix) == root_prefix then
+            local repo_path = "installer/" .. path:sub(#root_prefix + 1)
+            local data, data_err = github_http_get(github_raw_url(config, repo_path), "application/octet-stream")
+            if not data then
+                return false, "GitHubInstallerFileFailed:" .. repo_path .. ":" .. tostring(data_err), true
+            end
+            files[repo_path] = data
+        end
+    end
+    github_cache = {
+        key = key,
+        owner = config.owner,
+        repo = config.repo,
+        branch = config.branch,
+        root = config.root,
+        tree_hash = current_hash,
+        files = files,
+        checked_at = now(),
+        last_used = now(),
+        loaded_at = now(),
+    }
+    return true, github_cache, true
+end
+
+local function github_file(path)
+    path = normalize_path(path)
+    if github_cache and github_cache.files then
+        return github_cache.files[path]
+    end
+    return nil
+end
+
+local function github_exists(path)
+    path = normalize_path(path)
+    if not github_cache or not github_cache.files then
+        return false
+    end
+    if github_cache.files[path] ~= nil then
+        return true
+    end
+    local prefix = path == "" and "" or (path .. "/")
+    for file_path in pairs(github_cache.files) do
+        if file_path:sub(1, #prefix) == prefix then
+            return true
+        end
+    end
+    return false
+end
+
+local function github_list(path)
+    path = normalize_path(path)
+    if not github_cache or not github_cache.files then
+        return {}
+    end
+    local prefix = path == "" and "" or (path .. "/")
+    local seen = {}
+    local out = {}
+    for file_path in pairs(github_cache.files) do
+        if file_path:sub(1, #prefix) == prefix then
+            local rest = file_path:sub(#prefix + 1)
+            local child = rest:match("^([^/]+)")
+            if child and not seen[child] then
+                seen[child] = true
+                out[#out + 1] = child
+            end
+        end
+    end
+    table.sort(out)
+    return out
 end
 
 local function source_under_root(root, source)
@@ -127,6 +453,10 @@ local function copy_tree(source, target)
 end
 
 local function read_all(path)
+    local remote = github_file(path)
+    if remote ~= nil then
+        return remote
+    end
     if config_ok and server_config and server_config.local_path then
         local ok, config = pcall(server_config.load)
         if ok and type(config) == "table" then
@@ -156,6 +486,9 @@ local function local_paths_for(path)
 end
 
 local function exists_any(path)
+    if github_exists(path) then
+        return true
+    end
     for _, candidate in ipairs(local_paths_for(path)) do
         if fs.exists(candidate) then
             return true
@@ -193,6 +526,13 @@ end
 
 local function collect_tree(root, relative, out)
     local path = relative == "" and root or combine(root, relative)
+    local remote_children = github_list(path)
+    if #remote_children > 0 then
+        for _, child in ipairs(remote_children) do
+            collect_tree(root, relative == "" and child or combine(relative, child), out)
+        end
+        return true
+    end
     local local_full = path
     local local_paths = { path }
     if config_ok and server_config and server_config.local_path then
@@ -241,6 +581,204 @@ end
 
 local profile_for_source
 
+local function split_lines(text)
+    text = tostring(text or "")
+    local lines = {}
+    local index = 1
+    while index <= #text do
+        local next_newline = text:find("\n", index, true)
+        if next_newline then
+            lines[#lines + 1] = text:sub(index, next_newline - 1)
+            index = next_newline + 1
+        else
+            lines[#lines + 1] = text:sub(index)
+            break
+        end
+    end
+    if #text > 0 and text:sub(-1) == "\n" then
+        lines[#lines + 1] = ""
+    end
+    return lines
+end
+
+local function join_lines(lines)
+    return table.concat(lines or {}, "\n")
+end
+
+local function normalize_patch_path(path)
+    path = tostring(path or ""):gsub("\\", "/"):gsub("^/+", ""):gsub("^%./", ""):gsub("//+", "/")
+    if path == "" or path:find("..", 1, true) then
+        return nil, "InvalidPatchPath"
+    end
+    return path
+end
+
+local function apply_line_patch(base_data, patch)
+    local lines = split_lines(base_data or "")
+    local hunks = {}
+    for _, hunk in ipairs(patch.hunks or {}) do
+        hunks[#hunks + 1] = hunk
+    end
+    if type(patch.rml) == "string" then
+        for start, count in patch.rml:gmatch("%-L(%d+)%s+(%d+)") do
+            hunks[#hunks + 1] = {
+                start = tonumber(start),
+                remove = tonumber(count),
+            }
+        end
+    elseif type(patch.rml) == "table" then
+        for _, item in ipairs(patch.rml) do
+            if type(item) == "table" then
+                hunks[#hunks + 1] = {
+                    start = tonumber(item[1] or item.start),
+                    remove = tonumber(item[2] or item.count or item.remove),
+                }
+            end
+        end
+    end
+    table.sort(hunks, function(a, b)
+        return tonumber(a.start or 1) > tonumber(b.start or 1)
+    end)
+    for _, hunk in ipairs(hunks) do
+        local start = math.max(1, math.floor(tonumber(hunk.start or 1) or 1))
+        local remove = math.max(0, math.floor(tonumber(hunk.remove or hunk.delete or 0) or 0))
+        for _ = 1, remove do
+            if start <= #lines then
+                table.remove(lines, start)
+            end
+        end
+        local insert = hunk.lines or hunk.insert or {}
+        for index = #insert, 1, -1 do
+            table.insert(lines, start, tostring(insert[index] or ""))
+        end
+    end
+    return join_lines(lines)
+end
+
+local function apply_compose_patch(base_data, patch)
+    local source_lines = split_lines(base_data or "")
+    local out = {}
+    for _, chunk in ipairs(patch.chunks or {}) do
+        local copy = chunk.copy or chunk.source
+        if type(copy) == "table" then
+            local start = math.max(1, math.floor(tonumber(copy[1] or copy.start or 1) or 1))
+            local count = math.max(0, math.floor(tonumber(copy[2] or copy.count or 0) or 0))
+            for index = start, start + count - 1 do
+                out[#out + 1] = source_lines[index] or ""
+            end
+        end
+        for _, line in ipairs(chunk.lines or chunk.insert or {}) do
+            out[#out + 1] = tostring(line or "")
+        end
+    end
+    return join_lines(out)
+end
+
+local function apply_patch_record(collected, patch)
+    if type(patch) ~= "table" then
+        return false, "InvalidPatch"
+    end
+    if patch.format and patch.format ~= "HyperCubeInstallPatch" then
+        return false, "UnsupportedPatchFormat"
+    end
+    local path, path_err = normalize_patch_path(patch.path or patch.target)
+    if not path then
+        return false, path_err
+    end
+    collected.by_path = collected.by_path or {}
+    if patch.delete == true or patch.mode == "delete" then
+        collected.by_path[path] = nil
+        return true
+    end
+    local existing = collected.by_path[path]
+    if not existing and patch.require_existing ~= false then
+        return false, "PatchBaseMissing:" .. path
+    end
+    local mode = tostring(patch.mode or "line")
+    local data
+    if mode == "replace" then
+        data = tostring(patch.data or "")
+    elseif mode == "append" then
+        data = tostring(existing and existing.data or "") .. tostring(patch.data or "")
+    elseif mode == "compose" then
+        data = apply_compose_patch(existing and existing.data or "", patch)
+    else
+        data = apply_line_patch(existing and existing.data or "", patch)
+    end
+    collected.by_path[path] = {
+        path = path,
+        data = data,
+    }
+    return true
+end
+
+local function collect_patch_records(root, relative, out)
+    local path = relative == "" and root or combine(root, relative)
+    local remote_children = github_list(path)
+    if #remote_children > 0 then
+        for _, child in ipairs(remote_children) do
+            local ok, err = collect_patch_records(root, relative == "" and child or combine(relative, child), out)
+            if not ok then
+                return false, err
+            end
+        end
+        return true
+    end
+    local local_paths = local_paths_for(path)
+    local child_seen = {}
+    for _, candidate in ipairs(local_paths) do
+        if fs.exists(candidate) and fs.isDir(candidate) then
+            for _, child in ipairs(fs.list(candidate)) do
+                if not child_seen[child] then
+                    child_seen[child] = true
+                    local ok, err = collect_patch_records(root, relative == "" and child or combine(relative, child), out)
+                    if not ok then
+                        return false, err
+                    end
+                end
+            end
+        end
+    end
+    if next(child_seen) then
+        return true
+    end
+    local data, err = read_all(path)
+    if not data then
+        return false, err
+    end
+    local patch = textutils.unserialize(data)
+    if type(patch) ~= "table" then
+        return false, "PatchDecodeFailed:" .. tostring(relative)
+    end
+    out[#out + 1] = {
+        path = relative,
+        patch = patch,
+    }
+    return true
+end
+
+local function apply_source_patches(source, collected)
+    local patch_root = combine(source, PATCH_ROOT)
+    if not exists_any(patch_root) then
+        return true
+    end
+    local records = {}
+    local ok, err = collect_patch_records(patch_root, "", records)
+    if not ok then
+        return false, err
+    end
+    table.sort(records, function(a, b)
+        return tostring(a.path) < tostring(b.path)
+    end)
+    for _, record in ipairs(records) do
+        ok, err = apply_patch_record(collected, record.patch)
+        if not ok then
+            return false, err
+        end
+    end
+    return true
+end
+
 local function collect_source_image(source, collected)
     local distro_kernel = combine(source, "Kernal")
     if exists_any(distro_kernel) then
@@ -258,10 +796,41 @@ local function collect_source_image(source, collected)
             end
         end
     end
+    return apply_source_patches(source, collected)
+end
+
+local function collect_inherited_paths(profile, collected)
+    for _, inherited in ipairs((profile and profile.inherits) or {}) do
+        local source = inherited.source
+        local path = inherited.path
+        if source and path then
+            local full = combine(source, path)
+            if exists_any(full) then
+                local ok, err = collect_tree(source, path, collected)
+                if not ok then
+                    return false, err
+                end
+            end
+        end
+    end
+    return true
+end
+
+local function apply_patch_sources(profile, collected)
+    for _, source in ipairs((profile and profile.patch_sources) or {}) do
+        local ok, err = apply_source_patches(source, collected)
+        if not ok then
+            return false, err
+        end
+    end
     return true
 end
 
 local function collect_image(source, profile)
+    local cache_ok, cache_err = ensure_github_cache(source)
+    if not cache_ok then
+        return nil, cache_err
+    end
     local collected = {
         by_path = {},
     }
@@ -280,6 +849,16 @@ local function collect_image(source, profile)
         if not ok then
             return nil, err
         end
+    end
+
+    local inherit_ok, inherit_err = collect_inherited_paths(profile, collected)
+    if not inherit_ok then
+        return nil, inherit_err
+    end
+
+    local patch_source_ok, patch_source_err = apply_patch_sources(profile, collected)
+    if not patch_source_ok then
+        return nil, patch_source_err
     end
 
     local ok, err = collect_source_image(source, collected)
@@ -959,6 +1538,35 @@ function installer.new(options)
         return drives[self.selected_index]
     end
 
+    function self:github_cache_status()
+        local config = github_config()
+        expire_github_cache(config)
+        return {
+            source_mode = config.source_mode,
+            owner = config.owner,
+            repo = config.repo,
+            branch = config.branch,
+            root = config.root,
+            cached = github_cache ~= nil,
+            cached_files = github_cache and github_cache.files and (function()
+                local count = 0
+                for _ in pairs(github_cache.files) do
+                    count = count + 1
+                end
+                return count
+            end)() or 0,
+            tree_hash = github_cache and github_cache.tree_hash or nil,
+            loaded_at = github_cache and github_cache.loaded_at or nil,
+            last_used = github_cache and github_cache.last_used or nil,
+        }
+    end
+
+    function self:prune_github_cache()
+        local before = github_cache ~= nil
+        expire_github_cache(github_config())
+        return before and github_cache == nil
+    end
+
     function self:build_rom(target_mount)
         local profile = self:source_profile()
         if profile.bootstrap == true then
@@ -974,7 +1582,7 @@ function installer.new(options)
                 checksum = checksum(shim),
             }
         end
-        local blob, file_count_or_err = build_rom_blob(self.source, profile)
+        local blob, file_count_or_err = build_rom_blob(profile.source or self.source, profile)
         if not blob then
             return false, file_count_or_err
         end
@@ -996,7 +1604,7 @@ function installer.new(options)
 
     function self:build_update_package()
         local profile = self:source_profile()
-        local blob, file_count_or_err = build_rom_blob(self.source, profile)
+        local blob, file_count_or_err = build_rom_blob(profile.source or self.source, profile)
         if not blob then
             return false, file_count_or_err
         end
@@ -1015,7 +1623,7 @@ function installer.new(options)
 
     function self:build_update_package_for_device(device)
         local profile = profile_for_device(device) or SOURCE_PROFILES.phone
-        local blob, file_count_or_err = build_rom_blob(self:profile_source(profile), profile)
+        local blob, file_count_or_err = build_rom_blob(profile.source or self:profile_source(profile), profile)
         if not blob then
             return false, file_count_or_err
         end
@@ -1034,7 +1642,7 @@ function installer.new(options)
 
     function self:update_metadata()
         local profile = self:source_profile()
-        local blob, file_count_or_err = build_rom_blob(self.source, profile)
+        local blob, file_count_or_err = build_rom_blob(profile.source or self.source, profile)
         if not blob then
             return false, file_count_or_err
         end
@@ -1050,7 +1658,7 @@ function installer.new(options)
 
     function self:update_metadata_for_device(device)
         local profile = profile_for_device(device) or SOURCE_PROFILES.phone
-        local blob, file_count_or_err = build_rom_blob(self:profile_source(profile), profile)
+        local blob, file_count_or_err = build_rom_blob(profile.source or self:profile_source(profile), profile)
         if not blob then
             return false, file_count_or_err
         end
@@ -1069,7 +1677,13 @@ function installer.new(options)
             self.last_result = { ok = false, error = "FsUnavailable", time = now() }
             return false, "FsUnavailable"
         end
-        if not exists_any(self.source) then
+        local profile = self:source_profile()
+        local cache_ok, cache_err = ensure_github_cache(profile.source or self.source)
+        if not cache_ok then
+            self.last_result = { ok = false, error = cache_err, time = now() }
+            return false, cache_err
+        end
+        if not exists_any(profile.source or self.source) then
             self.last_result = { ok = false, error = "InstallImageMissing", time = now() }
             return false, "InstallImageMissing"
         end
@@ -1090,7 +1704,6 @@ function installer.new(options)
         local stamp = combine(drive.mount, "hypercube_install")
         local handle = fs.open(stamp, "w")
         if handle then
-            local profile = self:source_profile()
             handle.write(textutils.serialize({
                 os = profile.os,
                 device = profile.device,

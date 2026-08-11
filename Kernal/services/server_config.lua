@@ -15,6 +15,15 @@ local DEFAULTS = {
     },
     installer = {
         root = "installer",
+        source_mode = "auto",
+        github = {
+            owner = "reeet24",
+            repo = "HyperCubeServerOS",
+            branch = "main",
+            root = "computer/0",
+            cache_ttl_ms = 600000,
+            hash_check_ms = 60000,
+        },
     },
     appstore = {
         root = "appstore",
@@ -115,6 +124,16 @@ function server_config.load(path)
     config = merge_defaults(config or {}, copy_table(DEFAULTS))
     config.db.root = normalize_path(config.db.root, DEFAULTS.db.root)
     config.installer.root = normalize_path(config.installer.root, DEFAULTS.installer.root)
+    config.installer.source_mode = tostring(config.installer.source_mode or DEFAULTS.installer.source_mode)
+    config.installer.github = merge_defaults(config.installer.github, copy_table(DEFAULTS.installer.github))
+    config.installer.github.root = normalize_path(config.installer.github.root, DEFAULTS.installer.github.root)
+    config.installer.github.branch = tostring(config.installer.github.branch or DEFAULTS.installer.github.branch)
+    config.installer.github.owner = tostring(config.installer.github.owner or DEFAULTS.installer.github.owner)
+    config.installer.github.repo = tostring(config.installer.github.repo or DEFAULTS.installer.github.repo)
+    config.installer.github.cache_ttl_ms = tonumber(config.installer.github.cache_ttl_ms)
+        or DEFAULTS.installer.github.cache_ttl_ms
+    config.installer.github.hash_check_ms = tonumber(config.installer.github.hash_check_ms)
+        or DEFAULTS.installer.github.hash_check_ms
     config.appstore.root = normalize_path(config.appstore.root, DEFAULTS.appstore.root)
     config.appstore.db_root = normalize_path(config.appstore.db_root, DEFAULTS.appstore.db_root)
     config.appstore.min_replicas = tonumber(config.appstore.min_replicas) or DEFAULTS.appstore.min_replicas
@@ -136,6 +155,32 @@ function server_config.save(config, path)
     handle.write(textutils.serialize(config))
     handle.close()
     return true, config
+end
+
+function server_config.delete_local_installer(config)
+    config = config or server_config.load()
+    local paths = {}
+    paths[#paths + 1] = normalize_path(config.installer and config.installer.root, DEFAULTS.installer.root)
+    if type(config.installer and config.installer.roots) == "table" then
+        for _, entry in ipairs(config.installer.roots) do
+            local root = type(entry) == "table" and entry.root or entry
+            root = normalize_path(root)
+            if root and root ~= "" then
+                paths[#paths + 1] = root
+            end
+        end
+    end
+    paths[#paths + 1] = DEFAULTS.installer.root
+    local seen = {}
+    local deleted = 0
+    for _, path in ipairs(paths) do
+        if path and path ~= "" and not seen[path] and fs and fs.exists and fs.delete and fs.exists(path) then
+            seen[path] = true
+            fs.delete(path)
+            deleted = deleted + 1
+        end
+    end
+    return true, deleted
 end
 
 function server_config.installer_source(config, profile)

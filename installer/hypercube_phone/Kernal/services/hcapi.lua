@@ -257,6 +257,22 @@ function UserFS:write(path, data)
     return self:flush()
 end
 
+function UserFS:mkdir(path)
+    if normalize_path(path) == "/" then
+        return true
+    end
+    local parent, name = self:parent(path, true)
+    if not parent then
+        return false, name
+    end
+    if parent.children[name] and parent.children[name].kind ~= "dir" then
+        return false, "FileExists"
+    end
+    parent.children[name] = parent.children[name] or make_node("dir")
+    parent.children[name].updated_at = now()
+    return self:flush()
+end
+
 function UserFS:list(path)
     local node, err = self:resolve(path or "/", false)
     if not node then
@@ -770,6 +786,11 @@ local function make_userfs_api(tphone, user_fs)
             local ok, err = desktop_required()
             if not ok then return false, err end
             return user_fs:write(path, data)
+        end,
+        mkdir = function(path)
+            local ok, err = desktop_required()
+            if not ok then return false, err end
+            return user_fs:mkdir(path)
         end,
         list = function(path)
             local ok, err = desktop_required()

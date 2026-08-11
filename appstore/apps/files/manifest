@@ -3,9 +3,9 @@
   id = "files",
   label = "Files",
   author = "Tesserac",
-  description = "Desktop UserFS browser with app handoff for supported files.",
+  description = "Desktop UserFS browser with context menus and file operations.",
   refresh_rate = 12,
   render_mode = "window",
-  version = "1.0.0",
+  version = "1.1.0",
   devices = { "TDesktop", "TBusinessDesktop" },
 }

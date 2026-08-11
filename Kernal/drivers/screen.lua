@@ -347,6 +347,24 @@ function Screen:pull_event(timeout)
                 y = clamp(event[4], 1, self.height),
                 raw = event,
             }
+        elseif event[1] == "mouse_drag" then
+            cancel_timer()
+            return {
+                type = "drag",
+                button = event[2],
+                x = clamp(event[3], 1, self.width),
+                y = clamp(event[4], 1, self.height),
+                raw = event,
+            }
+        elseif event[1] == "mouse_up" then
+            cancel_timer()
+            return {
+                type = "mouse_up",
+                button = event[2],
+                x = clamp(event[3], 1, self.width),
+                y = clamp(event[4], 1, self.height),
+                raw = event,
+            }
         elseif event[1] == "mouse_scroll" then
             cancel_timer()
             return {

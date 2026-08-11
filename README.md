@@ -49,7 +49,7 @@ Useful options:
 - `update_server.lua --root computer/0`: Force the server source root if auto-detection fails.
 - `update_server.lua --token <token>`: Use a GitHub token to avoid API rate limits. You can also store the token in a local `github_token` file.
 
-The updater replaces server source paths such as `Kernal`, `appstore`, `installer`, `docs`, `init.lua`, and `startup.lua`, while preserving local `logs`, `user`, `hypercube_db`, disk records, `server_config`, and admin tokens. If `server_config` moves the installer source onto another disk, update diffs still show repo paths under `installer/...` but writes are applied to the configured installer disk path. Restart the server after updating.
+The updater replaces server source paths such as `Kernal`, `appstore`, `docs`, `init.lua`, and `startup.lua`, while preserving local `logs`, `user`, `hypercube_db`, disk records, `server_config`, and admin tokens. If `server_config.installer.source_mode` is `github`, update previews and installs skip `installer/...` files and delete local installer copies so the server disk stays small. If the installer source is stored locally or on another disk, update diffs still show repo paths under `installer/...` but writes are applied to the configured installer disk path. Restart the server after updating.
 
 ## First-Time Setup
 
@@ -60,11 +60,10 @@ The setup script:
 - Server modem side/name.
 - DB disk drives that DiskDB should use.
 - DiskDB replica group count.
-- External installer disk where downloaded `installer/` files are stored.
 - GitHub branch to install from, defaulting to `main`.
 - Server source download/install from `reeet24/HyperCubeServerOS`.
 
-The setup script writes `server_config` and `hypercube_server_install`. On boot, `init.lua` uses that config for rednet, DiskDB, and phone installer metadata. DiskDB only uses the configured DB drives, so the installer disk is not accidentally added to the replicated database. Later updates use the saved install record for patch checks and use `server_config` when applying `installer/...` changes.
+The setup script writes `server_config` and `hypercube_server_install`. On boot, `init.lua` uses that config for rednet, DiskDB, and phone installer metadata. First-time setup defaults `installer.source_mode` to `github`, so device installer images are fetched from GitHub on demand instead of stored on the server disk. DiskDB only uses the configured DB drives, so appstore and user data drives are not accidentally mixed into the replicated database. Later updates use the saved install record for patch checks and use `server_config` when applying local path changes.
 
 ## Kernel Pieces
 
@@ -180,7 +179,41 @@ Profiles:
 - `business_desktop`: `installer/hypercube_desktop`, inherits `installer/hypercube_phone`, OS `HyperCubeDesktop`, device `TBusinessDesktop`
 - `user_server`: `installer/user_server`, OS `HyperCubeUserServer`, device `UserServer`
 
-ROM builds inherit the server `Kernal/` first, optionally overlay a profile parent such as `installer/hypercube_phone`, then overlay distro-specific files from `installer/<distro>`. Keep only distro-specific overrides in distro kernel folders, such as device rednet drivers, GUI changes, app managers, service APIs, and HCAPI helpers. Default apps, user services, distro `init.lua`, and distro `startup.lua` still live under the inherited or distro folder.
+ROM builds inherit the server `Kernal/` first, optionally overlay a profile parent such as `installer/hypercube_phone`, optionally inherit selected individual files from other distro sources, then overlay distro-specific files from `installer/<distro>`. Keep only distro-specific overrides in distro kernel folders, such as device rednet drivers, GUI changes, app managers, service APIs, and HCAPI helpers. Default apps, user services, distro `init.lua`, and distro `startup.lua` still live under the inherited or distro folder.
+
+Distro folders may also include compact install patches under `installer/<distro>/patches`. Patch files are applied at package time and are not included in the ROM. The patch format is a serialized Lua table:
+
+```lua
+{
+    format = "HyperCubeInstallPatch",
+    path = "Kernal/gui.lua",
+    mode = "line",
+    hunks = {
+        { start = 10, remove = 2, lines = { "replacement line" } },
+    },
+}
+```
+
+Use `mode = "delete"` or `delete = true` to remove an inherited path. Use line patches for small overrides instead of storing a full duplicate Lua file when only a few lines differ.
+
+Line patches can use compact removal shorthand:
+
+```lua
+{
+    format = "HyperCubeInstallPatch",
+    path = "Kernal/drivers/rednet.lua",
+    mode = "line",
+    rml = "-L1 20 -L200 60",
+}
+```
+
+`rml` removes original line ranges by start line and count. Table form is also accepted, such as `rml = { { 1, 20 }, { 200, 60 } }`.
+
+Large overrides can use `mode = "compose"` to rebuild a file from inherited line ranges plus inserted replacement blocks. `installer/hypercube_desktop` uses this for `Kernal/gui.lua`, so the desktop window manager stores only the lines that differ from the inherited phone GUI instead of keeping a second full GUI file.
+
+For exact duplicates, prefer profile-level single-file inheritance over patches. For shared client overrides, profiles can reuse another distro's patch source; `user_server` applies the phone rednet patch instead of storing a second client rednet driver.
+
+When `server_config.installer.source_mode = "github"`, the server does not need a local `installer/` folder. On package or metadata requests, `installer.lua` checks the GitHub installer tree hash for the configured repo/branch/root, downloads the installer tree into memory only when the hash changed or no cache exists, and drops the in-memory copy after `installer.github.cache_ttl_ms` of idle time. Saving `github` mode from the Config page deletes local installer copies immediately. Use `installer.source_mode = "local"` to force disk-only source, or `auto` to use local files when present and GitHub when local installer files are missing.
 
 The desktop profiles reuse the phone app runtime and appstore package format by inheriting `installer/hypercube_phone`, then overlay desktop-specific files from `installer/hypercube_desktop`. Desktop boots with a MacOS-style shell, menu bar, bottom dock, and a multi-window app manager. Business desktop uses the business device identity for future business-only features.
 
@@ -233,7 +266,7 @@ Current packages:
 - `idlecube`: Incremental idle game.
 - `notes`: Local notes stored through HCFS.
 
-Phone built-in apps live in `installer/hypercube_phone/apps` and include account, app store, banking, browser, logs, messages, network, services, and settings.
+Phone built-in apps live in `installer/hypercube_phone/apps` and include app store, banking, browser, messages, settings, and the dev terminal.
 
 ## App Screen API
 
@@ -359,7 +392,8 @@ Bank branch and ATM device roles are intentionally narrow and include:
 - Run `first_time_setup.lua` and confirm it writes `server_config`.
 - Attach the configured server modem.
 - Attach the configured DB disk drives containing the replicated `hypercube_db`.
-- Attach the configured installer disk if installer source was moved off the main drive.
+- If using local installer source, attach the configured installer disk if installer source was moved off the main drive.
+- If using GitHub installer source, make sure HTTP is enabled and `server_config.installer.github` points at the correct repo, branch, and server root.
 - Boot `computer/0/startup.lua`.
 - Confirm `logs/kernel.log` includes `rednet hosting`, `diskdb`, and `phone ROM checksum`.
 - Reinstall or update phones after ROM integrity changes so they send `rom_checksum`.
