@@ -247,13 +247,6 @@ local function selected_text(state)
     return tostring(state.source or ""):sub(first + 1, last)
 end
 
-local function set_source(state, source)
-    state.source = tostring(source or "")
-    state.cursor = clamp_cursor(state, state.cursor)
-    state.dirty = true
-    state.lint_dirty = true
-end
-
 local function replace_selection(state, text)
     local source = tostring(state.source or "")
     local first, last = selection_bounds(state)
@@ -878,9 +871,11 @@ local function draw_code_segment(ctx, x, y, text, fg, bg)
 end
 
 local function draw_code_line(ctx, y, line, state, diagnostics)
+    line = line or { text = "", start = 0, finish = 0, line_no = 1 }
+    state = state or {}
     local width = math.max(1, ctx.width)
-    local text = tostring(line and line.text or ""):sub(1, width)
-    local line_bg = diagnostics and diagnostics[line and line.line_no] == "error" and C.red or C.black
+    local text = tostring(line.text or ""):sub(1, width)
+    local line_bg = diagnostics and diagnostics[line.line_no] == "error" and C.red or C.black
     local sel_first, sel_last = selection_bounds(state)
     api.screen.write(ctx.x, y, string.rep(" ", width), C.lightGray, line_bg)
 
@@ -947,8 +942,11 @@ local function draw_code_line(ctx, y, line, state, diagnostics)
         end
     end
 
-    if math.floor(os.clock() * 2) % 2 == 0 and (state.cursor or 0) >= (line.start or 0) and (state.cursor or 0) <= (line.finish or 0) then
-        local col = math.min(width - 1, math.max(0, (state.cursor or 0) - (line.start or 0)))
+    local cursor = tonumber(state.cursor or 0) or 0
+    local line_start = tonumber(line.start or 0) or 0
+    local line_finish = tonumber(line.finish or line_start) or line_start
+    if math.floor(os.clock() * 2) % 2 == 0 and cursor >= line_start and cursor <= line_finish then
+        local col = math.min(width - 1, math.max(0, cursor - line_start))
         api.screen.write(ctx.x + col, y, col < #text and text:sub(col + 1, col + 1) or " ", C.black, C.yellow)
     end
 end
