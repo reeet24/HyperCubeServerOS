@@ -346,6 +346,26 @@ local function fetch_appstore_tree_hash(config)
                 last_err = tostring(err) .. ":" .. full
             end
         end
+        local url = github_api_base(config) .. "/git/trees/" .. encode_segment(branch) .. "?recursive=1"
+        local body, tree_err = github_http_get(url)
+        if body then
+            local decoded, json_err = decode_json(body)
+            if type(decoded) == "table" and type(decoded.tree) == "table" then
+                for _, entry in ipairs(decoded.tree) do
+                    local path = normalize_path(entry.path)
+                    if entry.type == "tree" and (path == "appstore/apps" or path:sub(-14) == "/appstore/apps") then
+                        config.branch = branch
+                        config.root = path == "appstore/apps" and "" or path:sub(1, #path - 14)
+                        return entry.sha
+                    end
+                end
+                last_err = "AppStoreFolderNotInRepo"
+            else
+                last_err = json_err or (type(decoded) == "table" and decoded.message) or "GitTreeMissing"
+            end
+        else
+            last_err = tostring(tree_err)
+        end
     end
     return nil, last_err or "AppStoreTreeHashMissing"
 end
