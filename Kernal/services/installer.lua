@@ -14,13 +14,15 @@ local SOURCE_PROFILES = {
         device = "TBusinessPhone",
     },
     desktop = {
-        source = "installer/hypercube_phone",
+        source = "installer/hypercube_desktop",
+        extends = "installer/hypercube_phone",
         os = "HyperCubeDesktop",
         device = "TDesktop",
         bootstrap = true,
     },
     business_desktop = {
-        source = "installer/hypercube_phone",
+        source = "installer/hypercube_desktop",
+        extends = "installer/hypercube_phone",
         os = "HyperCubeDesktop",
         device = "TBusinessDesktop",
         bootstrap = true,
@@ -237,7 +239,29 @@ local function collect_tree(root, relative, out)
     return true
 end
 
-local function collect_image(source)
+local profile_for_source
+
+local function collect_source_image(source, collected)
+    local distro_kernel = combine(source, "Kernal")
+    if exists_any(distro_kernel) then
+        local ok, err = collect_tree(source, "Kernal", collected)
+        if not ok then
+            return false, err
+        end
+    end
+    for _, path in ipairs(INSTALL_PATHS) do
+        local full = combine(source, path)
+        if exists_any(full) then
+            local ok, err = collect_tree(source, path, collected)
+            if not ok then
+                return false, err
+            end
+        end
+    end
+    return true
+end
+
+local function collect_image(source, profile)
     local collected = {
         by_path = {},
     }
@@ -249,21 +273,18 @@ local function collect_image(source)
             end
         end
     end
-    local distro_kernel = combine(source, "Kernal")
-    if exists_any(distro_kernel) then
-        local ok, err = collect_tree(source, "Kernal", collected)
+
+    profile = profile or profile_for_source(source)
+    if profile and profile.extends then
+        local ok, err = collect_source_image(profile.extends, collected)
         if not ok then
             return nil, err
         end
     end
-    for _, path in ipairs(INSTALL_PATHS) do
-        local full = combine(source, path)
-        if exists_any(full) then
-            local ok, err = collect_tree(source, path, collected)
-            if not ok then
-                return nil, err
-            end
-        end
+
+    local ok, err = collect_source_image(source, collected)
+    if not ok then
+        return nil, err
     end
     local files = {}
     for _, file in pairs(collected.by_path) do
@@ -275,7 +296,7 @@ local function collect_image(source)
     return files
 end
 
-local function profile_for_source(source)
+function profile_for_source(source)
     if source == DEFAULT_SOURCE then
         return SOURCE_PROFILES.phone
     end
@@ -302,7 +323,7 @@ local function profile_for_device(device)
 end
 
 local function build_rom_blob(source, profile)
-    local files, err = collect_image(source)
+    local files, err = collect_image(source, profile)
     if not files then
         return nil, err
     end

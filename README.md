@@ -176,13 +176,13 @@ Profiles:
 
 - `phone`: `installer/hypercube_phone`, OS `HyperCube`, device `TPhone`
 - `business_phone`: `installer/hypercube_phone`, OS `HyperCube`, device `TBusinessPhone`
-- `desktop`: `installer/hypercube_phone`, OS `HyperCubeDesktop`, device `TDesktop`
-- `business_desktop`: `installer/hypercube_phone`, OS `HyperCubeDesktop`, device `TBusinessDesktop`
+- `desktop`: `installer/hypercube_desktop`, inherits `installer/hypercube_phone`, OS `HyperCubeDesktop`, device `TDesktop`
+- `business_desktop`: `installer/hypercube_desktop`, inherits `installer/hypercube_phone`, OS `HyperCubeDesktop`, device `TBusinessDesktop`
 - `user_server`: `installer/user_server`, OS `HyperCubeUserServer`, device `UserServer`
 
-ROM builds inherit the server `Kernal/` first, then overlay distro-specific files from `installer/<distro>/Kernal`. Keep only distro-specific overrides in distro kernel folders, such as device rednet drivers, GUI changes, app managers, service APIs, and HCAPI helpers. Default apps, user services, distro `init.lua`, and distro `startup.lua` still live under the distro folder.
+ROM builds inherit the server `Kernal/` first, optionally overlay a profile parent such as `installer/hypercube_phone`, then overlay distro-specific files from `installer/<distro>`. Keep only distro-specific overrides in distro kernel folders, such as device rednet drivers, GUI changes, app managers, service APIs, and HCAPI helpers. Default apps, user services, distro `init.lua`, and distro `startup.lua` still live under the inherited or distro folder.
 
-The desktop profiles reuse the phone app runtime and appstore package format, but boot with a MacOS-style desktop shell, menu bar, bottom dock, and window chrome. Business desktop uses the business device identity for future business-only features.
+The desktop profiles reuse the phone app runtime and appstore package format by inheriting `installer/hypercube_phone`, then overlay desktop-specific files from `installer/hypercube_desktop`. Desktop boots with a MacOS-style shell, menu bar, bottom dock, and a multi-window app manager. Business desktop uses the business device identity for future business-only features.
 
 `desktop`, `business_desktop`, and `user_server` install as network bootstrap floppies. Boot the target computer from the floppy once; the shim downloads the full ROM from the main server, writes it to the target computer, then the disk can be removed before reboot. This avoids filling the floppy with the full app/runtime image.
 

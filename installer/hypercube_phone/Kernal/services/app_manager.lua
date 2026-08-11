@@ -46,7 +46,14 @@ local function device_allowed(devices, device)
     end
     device = tostring(device or "")
     for _, allowed in ipairs(devices) do
-        if tostring(allowed or "") == device then
+        allowed = tostring(allowed or "")
+        if allowed == device then
+            return true
+        end
+        if device == "TDesktop" and allowed == "TPhone" then
+            return true
+        end
+        if device == "TBusinessDesktop" and (allowed == "TDesktop" or allowed == "TBusinessPhone" or allowed == "TPhone") then
             return true
         end
     end

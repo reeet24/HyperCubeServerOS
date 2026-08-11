@@ -794,7 +794,19 @@ local function make_userfs_api(tphone, user_fs)
     }
 end
 
-local function make_desktop_api(tphone)
+local function make_desktop_api(tphone, app_id)
+    local function request(action, payload)
+        if not is_desktop_device(tphone) then
+            return false, "DesktopRequired"
+        end
+        payload = payload or {}
+        payload.type = "window"
+        payload.action = action
+        payload.app_id = app_id
+        tphone.shell_request = payload
+        return true
+    end
+
     return {
         open_file = function(path)
             if not is_desktop_device(tphone) then
@@ -805,6 +817,33 @@ local function make_desktop_api(tphone)
                 path = tostring(path or ""),
             }
             return true
+        end,
+        minimize = function()
+            return request("minimize")
+        end,
+        fullscreen = function()
+            return request("fullscreen")
+        end,
+        restore = function()
+            return request("restore")
+        end,
+        close = function()
+            return request("close")
+        end,
+        set_title = function(title)
+            return request("set_title", { title = tostring(title or "") })
+        end,
+        open_popup = function(kind, options)
+            options = type(options) == "table" and options or {}
+            return request("open_popup", {
+                kind = tostring(kind or "popup"),
+                title = tostring(options.title or ""),
+                width = tonumber(options.width),
+                height = tonumber(options.height),
+                x = tonumber(options.x),
+                y = tonumber(options.y),
+                data = type(options.data) == "table" and options.data or {},
+            })
         end,
     }
 end
@@ -966,7 +1005,7 @@ function hcapi.create(tphone, app_id)
         printer = make_printer_api(tphone),
         fs = make_fs_api(tphone.hcfs, app_id),
         userfs = make_userfs_api(tphone, tphone.hcfs),
-        desktop = make_desktop_api(tphone),
+        desktop = make_desktop_api(tphone, app_id),
         dev = make_dev_api(tphone),
         device = make_device_api(tphone),
         apps = {

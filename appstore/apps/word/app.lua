@@ -7,7 +7,7 @@ local app = {
         label = "Write",
         color = C.white,
         dock = true,
-        render_mode = "window",
+        render_mode = "exclusive",
         refresh_rate = 12,
         devices = { "TDesktop", "TBusinessDesktop" },
     },
@@ -260,9 +260,18 @@ local function picker_entries(state)
     return entries
 end
 
-local function render_picker(ctx, state)
-    local y = 2
-    local h = math.max(5, ctx.height - 3)
+local function open_picker(state)
+    state.picker = true
+    state.picker_path = "/Documents"
+    if api.userfs and api.userfs.exists and not api.userfs.exists(state.picker_path) then
+        state.picker_path = "/"
+    end
+    state.picker_scroll = 0
+end
+
+local function render_picker(ctx, state, embedded)
+    local y = embedded and 2 or 0
+    local h = embedded and math.max(5, ctx.height - 3) or ctx.height
     api.screen.rect(ctx.x, ctx.y + y, ctx.width, h, C.gray)
     write(ctx, 1, y, "Open .txt", C.white, C.gray)
     button(ctx, "word_pick_close", math.max(1, ctx.width - 7), y, 7, "Cancel", C.red)
@@ -301,6 +310,15 @@ function app.render(ctx)
     local state = ctx.state
     ensure_state(state)
 
+    if ctx.window and ctx.window.popup and ctx.window.popup_kind == "file_picker" then
+        state.picker = true
+        if not state.picker_path then
+            open_picker(state)
+        end
+        render_picker(ctx, state, false)
+        return
+    end
+
     button(ctx, "word_new", 0, 0, 5, "New", C.gray)
     button(ctx, "word_open", 6, 0, 6, "Open", C.gray)
     button(ctx, "word_save", 13, 0, 6, "Save", C.blue)
@@ -336,24 +354,28 @@ function app.render(ctx)
         write(ctx, 0, editor_y, state.focus == "body" and "_" or "", C.lightGray, C.black)
     end
     if state.picker then
-        render_picker(ctx, state)
+        render_picker(ctx, state, true)
     end
 end
 
 function app.on_touch(ctx)
     local state = ctx.state
     ensure_state(state)
+    local popup_picker = ctx.window and ctx.window.popup and ctx.window.popup_kind == "file_picker"
     if ctx.event and ctx.event.type == "scroll" then
-        if state.picker then
+        if state.picker or popup_picker then
             state.picker_scroll = math.max(0, (state.picker_scroll or 0) + tonumber(ctx.event.direction or 0))
         else
             state.scroll = math.max(0, (state.scroll or 0) + tonumber(ctx.event.direction or 0))
         end
         return true
     end
-    if state.picker then
+    if state.picker or popup_picker then
         if ctx.button_id == "word_pick_close" then
             state.picker = false
+            if popup_picker and api.desktop and api.desktop.close then
+                api.desktop.close()
+            end
             return true
         elseif ctx.button_id == "word_pick_up" then
             state.picker_path = parent(state.picker_path)
@@ -369,6 +391,9 @@ function app.on_touch(ctx)
                 else
                     load_path(state, entry.path)
                     state.picker = false
+                    if popup_picker and api.desktop and api.desktop.close then
+                        api.desktop.close()
+                    end
                 end
             end
             return true
@@ -379,12 +404,17 @@ function app.on_touch(ctx)
         new_doc(state)
         return true
     elseif ctx.button_id == "word_open" then
-        state.picker = true
-        state.picker_path = "/Documents"
-        if api.userfs and api.userfs.exists and not api.userfs.exists(state.picker_path) then
-            state.picker_path = "/"
+        open_picker(state)
+        if ctx.desktop and api.desktop and api.desktop.open_popup then
+            local ok = api.desktop.open_popup("file_picker", {
+                title = "Open .txt",
+                width = math.min(36, math.max(24, ctx.width - 4)),
+                height = math.min(14, math.max(8, ctx.height - 2)),
+            })
+            if ok then
+                state.picker = false
+            end
         end
-        state.picker_scroll = 0
         return true
     elseif ctx.button_id == "word_save" then
         save_doc(state)
@@ -409,8 +439,9 @@ function app.on_key(ctx)
     local state = ctx.state
     ensure_state(state)
     local event = ctx.event or {}
+    local popup_picker = ctx.window and ctx.window.popup and ctx.window.popup_kind == "file_picker"
     if event.type == "char" then
-        if state.picker then
+        if state.picker or popup_picker then
             return true
         end
         append_char(state, event.raw and event.raw[2] or "")
@@ -420,12 +451,15 @@ function app.on_key(ctx)
     end
 
     local key = event.raw and event.raw[2]
-    if state.picker then
+    if state.picker or popup_picker then
         if key == keys.backspace then
             state.picker_path = parent(state.picker_path)
             state.picker_scroll = 0
         elseif key == keys.enter then
             state.picker = false
+            if popup_picker and api.desktop and api.desktop.close then
+                api.desktop.close()
+            end
         elseif key == keys.up then
             state.picker_scroll = math.max(0, (state.picker_scroll or 0) - 1)
         elseif key == keys.down then

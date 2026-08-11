@@ -449,7 +449,7 @@ Multi-file packages use `files`:
 
 The appstore download response includes both `source` for older single-file installers and `files` for multi-file installers. Current phone installs prefer the bundle and skip duplicate `source` writes when `files` already contains `app.lua`. The response also includes `integrity_encoded`, `protected_file_count`, and `mutable_paths`.
 
-`devices` is optional. When present, it restricts install/load to specific HyperCube device types such as `TDesktop` and `TBusinessDesktop`. Unsupported devices return `DeviceNotSupported` at install time, and the App Store hides incompatible apps from its catalog.
+`devices` is optional. When present, it restricts install/load to specific HyperCube device types such as `TDesktop` and `TBusinessDesktop`. Desktop devices can also run apps that target their matching phone class (`TDesktop` accepts `TPhone`; `TBusinessDesktop` accepts `TBusinessPhone`, `TDesktop`, and `TPhone`). Unsupported devices return `DeviceNotSupported` at install time, and the App Store hides incompatible apps from its catalog.
 
 Reserved and invalid bundle paths:
 
@@ -540,6 +540,19 @@ Desktop apps also receive `api.userfs` and `api.desktop`. Phone apps should cont
 - `api.userfs.delete(path)` deletes a file or folder entry.
 
 `api.desktop.open_file(path)` asks the desktop shell to open a file with a registered app. The built-in desktop currently routes `.txt` files to HyperWrite.
+
+Desktop apps can also ask the window manager to adjust their current window:
+
+- `api.desktop.minimize()`
+- `api.desktop.fullscreen()`
+- `api.desktop.restore()`
+- `api.desktop.close()`
+- `api.desktop.set_title(title)`
+- `api.desktop.open_popup(kind, options)`
+
+When an app is running inside the desktop window manager, render and event callbacks include `ctx.desktop = true` and `ctx.window = { id, app_id, fullscreen, minimized, width, height }`. Existing phone apps can still run because the normal `ctx.x`, `ctx.y`, `ctx.width`, `ctx.height`, `ctx.buttons`, and `ctx.state` fields are unchanged.
+
+`api.desktop.open_popup(kind, options)` opens a focused child window for the current app. `options` may include `{ title, width, height, x, y, data }`. Popup callbacks receive `ctx.window.popup = true`, `ctx.window.popup_kind`, `ctx.window.popup_data`, and `ctx.window.parent_id`. Use this for context menus, pickers, and short modal workflows. A popup can close itself with `api.desktop.close()`.
 
 ## Recommended App Pattern
 

@@ -59,20 +59,11 @@ function printer_driver.print(text, options)
 
     options = options or {}
     local title = tostring(options.title or "HyperCube Document")
-    local page_width, page_height = 25, 21
-    if printer.getPageSize then
-        local size_ok, w, h = pcall(printer.getPageSize)
-        if not size_ok then
-            return false, "PageSizeFailed:" .. tostring(w)
-        end
-        page_width = tonumber(w) or page_width
-        page_height = tonumber(h) or page_height
-    end
-
-    local lines = wrap_lines(text, page_width)
+    local lines = nil
+    local page_height = 21
     local page = 0
     local index = 1
-    while index <= #lines do
+    while not lines or index <= #lines do
         local call_ok, ok, err = pcall(printer.newPage)
         if not call_ok then
             return false, "NewPageFailed:" .. tostring(ok)
@@ -81,6 +72,17 @@ function printer_driver.print(text, options)
             return false, err or "NewPageFailed"
         end
         page = page + 1
+        if not lines then
+            local page_width = 25
+            if printer.getPageSize then
+                local size_ok, w, h = pcall(printer.getPageSize)
+                if size_ok then
+                    page_width = tonumber(w) or page_width
+                    page_height = tonumber(h) or page_height
+                end
+            end
+            lines = wrap_lines(text, page_width)
+        end
         if printer.setPageTitle then
             local title_ok, title_err = pcall(printer.setPageTitle, title .. (page > 1 and (" " .. tostring(page)) or ""))
             if not title_ok then

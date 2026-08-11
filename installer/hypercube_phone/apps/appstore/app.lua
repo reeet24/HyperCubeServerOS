@@ -113,7 +113,15 @@ local function device_allowed(item)
     end
     local device = api.device and api.device.type or ""
     for _, allowed in ipairs(devices) do
-        if tostring(allowed or "") == tostring(device or "") then
+        allowed = tostring(allowed or "")
+        device = tostring(device or "")
+        if allowed == device then
+            return true
+        end
+        if device == "TDesktop" and allowed == "TPhone" then
+            return true
+        end
+        if device == "TBusinessDesktop" and (allowed == "TDesktop" or allowed == "TBusinessPhone" or allowed == "TPhone") then
             return true
         end
     end
