@@ -16,6 +16,18 @@ local function write_line(ctx, row, text, fg)
     api.screen.write(ctx.x, ctx.y + row, text, fg or C.white, C.black)
 end
 
+local function truncate(text, width)
+    text = tostring(text or "")
+    width = math.max(1, tonumber(width) or 1)
+    if #text <= width then
+        return text
+    end
+    if width <= 1 then
+        return text:sub(1, width)
+    end
+    return text:sub(1, width - 1) .. ">"
+end
+
 local function format_space(value)
     if value == nil then
         return "?"
@@ -84,6 +96,10 @@ function app.render(ctx)
         fg = C.white,
         bg = C.red,
     })
+    ctx.buttons.sign_out = api.screen.button("sign_out", ctx.x + 13, ctx.y, 10, "Sign Out", {
+        fg = C.white,
+        bg = C.orange,
+    })
     write_line(ctx, row, "Device: " .. tostring(api.device and api.device.type or "TPhone"))
     row = row + 1
     write_line(ctx, row, "OS: HyperCube")
@@ -136,6 +152,36 @@ function app.render(ctx)
         row = row + 1
         write_line(ctx, row, state.dev_message, C.lightGray)
     end
+
+    if api.identity and api.identity.username == "tesserac" then
+        row = row + 2
+        write_line(ctx, row, "Recovery", C.cyan)
+        row = row + 1
+        ctx.buttons.recovery_refresh = api.screen.button("recovery_refresh", ctx.x, ctx.y + row, 8, "Refresh", {
+            fg = C.white,
+            bg = C.blue,
+        })
+        ctx.buttons.recovery_approve = api.screen.button("recovery_approve", ctx.x + 9, ctx.y + row, 8, "Approve", {
+            fg = C.white,
+            bg = C.green,
+        })
+        row = row + 1
+        if state.recovery_message then
+            write_line(ctx, row, truncate(state.recovery_message, ctx.width), C.lightGray)
+            row = row + 1
+        end
+        local requests = state.recovery_requests or {}
+        if #requests == 0 then
+            write_line(ctx, row, "No pending recovery requests", C.lightGray)
+        else
+            local request = requests[1]
+            write_line(ctx, row, "Pending: " .. tostring(#requests), C.yellow)
+            row = row + 1
+            write_line(ctx, row, truncate(tostring(request.username or request.tesserac_id), ctx.width), C.white)
+            row = row + 1
+            write_line(ctx, row, truncate("Req: " .. tostring(request.request_id), ctx.width), C.lightGray)
+        end
+    end
 end
 
 function app.on_key(ctx)
@@ -177,6 +223,36 @@ function app.on_touch(ctx)
             api.device.shutdown()
         elseif os and os.shutdown then
             os.shutdown()
+        end
+        return true
+    elseif ctx.button_id == "sign_out" then
+        if api.device and api.device.sign_out then
+            api.device.sign_out()
+        end
+        return true
+    elseif ctx.button_id == "recovery_refresh" then
+        local ok, result = api.auth and api.auth.recovery_list and api.auth.recovery_list()
+        if ok then
+            ctx.state.recovery_requests = result.requests or {}
+            ctx.state.recovery_message = "Loaded " .. tostring(#ctx.state.recovery_requests)
+        else
+            ctx.state.recovery_message = tostring(result or "RecoveryListFailed")
+        end
+        return true
+    elseif ctx.button_id == "recovery_approve" then
+        local requests = ctx.state.recovery_requests or {}
+        local request = requests[1]
+        if not request then
+            ctx.state.recovery_message = "No pending requests"
+            return true
+        end
+        local ok, result = api.auth and api.auth.recovery_approve and api.auth.recovery_approve(request.request_id)
+        if ok then
+            table.remove(requests, 1)
+            ctx.state.recovery_requests = requests
+            ctx.state.recovery_message = "Approved " .. tostring(result.username or request.username)
+        else
+            ctx.state.recovery_message = tostring(result or "RecoveryApproveFailed")
         end
         return true
     end

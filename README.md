@@ -112,7 +112,7 @@ Important message groups:
 
 - Discovery: `server.lookup`, `server.announce`
 - Handshake: `hello`, `welcome`, `server.reject`
-- Identity: `identify`, `auth.resolve`, `auth.signup`, `auth.signin`, `device.register`, `device.list`
+- Identity: `identify`, `auth.resolve`, `auth.signup`, `auth.signin`, `auth.signout`, `auth.recovery.*`, `device.register`, `device.list`
 - Database: `db.status`, `db.get`, `db.set`, `db.delete`
 - Web: `web.register`, `web.publish`, `web.resolve`, `web.get`, `web.request`, `web.list`
 - Banking: `bank.open`, `bank.status`, `bank.history`, `bank.transfer`, `bank.deposit`, `bank.withdraw`, `bank.atm.fee`, `bank.branch.trust`, `bank.branch.revoke`
@@ -374,6 +374,8 @@ The server is configured with `min_replicas = 2`, so production should keep enou
 ## Identity And Scopes
 
 TesseracID stores accounts, sessions, and registered devices. Device scopes limit what authenticated devices can access.
+
+Phones can sign out from Settings. This invalidates the current server session, deletes the local `user/tesseracid` identity file, and reboots into the sign-in flow. The boot identity menu also supports account recovery: it submits an authorization request to the official `tesserac` account, and the official account can approve pending recovery requests from Settings.
 
 Default phone scopes include:
 

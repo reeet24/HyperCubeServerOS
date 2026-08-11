@@ -1,6 +1,9 @@
 local tesseracid = {}
 
 local IDENTITY_PATH = "user/tesseracid"
+local RECOVERY_INDEX_KEY = "auth:recovery:index"
+local RECOVERY_PREFIX = "auth:recovery:"
+local OFFICIAL_TESSERAC_USERNAME = "tesserac"
 
 local function now()
     if os.epoch then
@@ -259,6 +262,13 @@ function tesseracid.save_local(identity)
     return write_file(IDENTITY_PATH, serialize(identity))
 end
 
+function tesseracid.clear_local()
+    if fs and fs.exists and fs.delete and fs.exists(IDENTITY_PATH) then
+        fs.delete(IDENTITY_PATH)
+    end
+    return true
+end
+
 local function prompt(label, hidden)
     write(label)
     if hidden and read then
@@ -306,12 +316,54 @@ function tesseracid.ensure_device_identity(network, logger, options)
     print(options.title or "TesseracID required")
     print("1. Sign in")
     print("2. Sign up")
+    print("3. Recover account")
 
     local choice = prompt("Select: ")
     local username = prompt("TesseracID: ")
     local normalized, err = normalize_username(username)
     if not normalized then
         return nil, err
+    end
+
+    if choice == "3" then
+        if normalized:match("^tid_") then
+            local resolved = request(network, {
+                type = "auth.resolve",
+                username = normalized,
+            }, "auth.resolve.result")
+            if resolved and resolved.ok and resolved.username then
+                normalized = resolved.username
+            else
+                return nil, (resolved and resolved.error) or "AccountNotFound"
+            end
+        end
+        local new_password = prompt("New password: ", true)
+        local confirm = prompt("Confirm password: ", true)
+        if new_password ~= confirm then
+            return nil, "PasswordMismatch"
+        end
+        local recovery_hash = tesseracid.password_hash(normalized, new_password, normalized)
+        local local_install = install_info()
+        local reply, request_err = request(network, {
+            type = "auth.recovery.request",
+            username = normalized,
+            requested_password_hash = recovery_hash,
+            reason = "Device account recovery",
+            device = {
+                os = options.os or local_install.os or "HyperCube",
+                role = options.role or "phone",
+                device = options.device or local_install.device,
+                label = os.getComputerLabel and os.getComputerLabel() or nil,
+                computer_id = os.getComputerID and os.getComputerID() or nil,
+            },
+        }, "auth.recovery.request.result")
+        if reply and reply.ok then
+            print("Recovery request sent.")
+            print("Request: " .. tostring(reply.request_id))
+            print("Sign in with the new password after Tesserac approves it.")
+            return nil, "RecoveryRequestSubmitted"
+        end
+        return nil, (reply and reply.error) or request_err or "RecoveryRequestFailed"
     end
 
     if choice ~= "2" and normalized:match("^tid_") then
@@ -654,6 +706,187 @@ function tesseracid.server_list_devices(database, message)
     end
     return true, {
         devices = public_devices(validation.account.devices),
+    }
+end
+
+local function recovery_key(id)
+    return RECOVERY_PREFIX .. tostring(id or "")
+end
+
+local function make_recovery_id(account, message)
+    return "rec_" .. checksum(tostring(account.tesserac_id) .. ":" .. tostring(message.requested_password_hash) .. ":" .. tostring(now()))
+end
+
+local function load_index(database, key)
+    local value = unwrap_record(database:get(key))
+    if type(value) ~= "table" then
+        return {}
+    end
+    return value
+end
+
+local function append_index(database, key, id)
+    local index = load_index(database, key)
+    for _, existing in ipairs(index) do
+        if existing == id then
+            return true
+        end
+    end
+    index[#index + 1] = id
+    database:set(key, index)
+    return true
+end
+
+local function public_recovery(record)
+    if type(record) ~= "table" then
+        return nil
+    end
+    return {
+        request_id = record.request_id,
+        status = record.status,
+        tesserac_id = record.tesserac_id,
+        username = record.username,
+        display_name = record.display_name,
+        requested_at = record.requested_at,
+        requested_by = record.requested_by,
+        device = record.device,
+        reason = record.reason,
+        reviewed_at = record.reviewed_at,
+        reviewed_by = record.reviewed_by,
+    }
+end
+
+local function require_official_tesserac(database, message)
+    local ok, validation = tesseracid.validate_session(database, message.tesserac_id, message.session_token, "account.identity")
+    if not ok then
+        return false, validation
+    end
+    if tostring(validation.account.username or "") ~= OFFICIAL_TESSERAC_USERNAME then
+        return false, "OfficialTesseracRequired"
+    end
+    return true, validation
+end
+
+function tesseracid.server_recovery_request(database, message, sender)
+    if not database then
+        return false, "DatabaseUnavailable"
+    end
+    local account, username, err = tesseracid.find_account_for_signin(database, message.username or message.login)
+    if not account then
+        return false, err or "AccountNotFound"
+    end
+    if not message.requested_password_hash or tostring(message.requested_password_hash) == "" then
+        return false, "PasswordHashRequired"
+    end
+    username = account.username or username
+    local request_id = make_recovery_id(account, message)
+    local record = {
+        request_id = request_id,
+        status = "pending",
+        tesserac_id = account.tesserac_id,
+        username = username,
+        display_name = account.display_name or username,
+        requested_password_hash = tostring(message.requested_password_hash),
+        requested_at = now(),
+        requested_by = sender,
+        reason = tostring(message.reason or ""),
+        device = message.device,
+    }
+    local ok, result = database:set(recovery_key(request_id), record)
+    if not ok then
+        return false, result
+    end
+    append_index(database, RECOVERY_INDEX_KEY, request_id)
+    return true, {
+        request_id = request_id,
+        status = record.status,
+        username = username,
+        tesserac_id = account.tesserac_id,
+    }
+end
+
+function tesseracid.server_recovery_list(database, message)
+    local ok, validation = require_official_tesserac(database, message)
+    if not ok then
+        return false, validation
+    end
+    local out = {}
+    local index = load_index(database, RECOVERY_INDEX_KEY)
+    for _, request_id in ipairs(index) do
+        local record = unwrap_record(database:get(recovery_key(request_id)))
+        if type(record) == "table" and record.status == "pending" then
+            out[#out + 1] = public_recovery(record)
+        end
+    end
+    table.sort(out, function(a, b)
+        return (tonumber(a.requested_at) or 0) < (tonumber(b.requested_at) or 0)
+    end)
+    return true, {
+        requests = out,
+        reviewer = validation.account.username,
+    }
+end
+
+function tesseracid.server_recovery_approve(database, message)
+    local ok, validation = require_official_tesserac(database, message)
+    if not ok then
+        return false, validation
+    end
+    local request_id = tostring(message.request_id or "")
+    if request_id == "" then
+        return false, "RequestIdRequired"
+    end
+    local record = unwrap_record(database:get(recovery_key(request_id)))
+    if type(record) ~= "table" then
+        return false, "RecoveryRequestNotFound"
+    end
+    if record.status ~= "pending" then
+        return false, "RecoveryRequestAlreadyReviewed"
+    end
+    local account, err = tesseracid.find_account_by_tid(database, record.tesserac_id)
+    if not account then
+        return false, err or "AccountNotFound"
+    end
+    account.password_hash = record.requested_password_hash
+    account.hcfs_key = account.hcfs_key or make_hcfs_key(account.username, account.password_hash)
+    account.sessions = {}
+    for device_id, device in pairs(account.devices or {}) do
+        device.session_token = nil
+        device.status = "recovery_required"
+        device.last_seen = now()
+        database:set(device_key(device_id), device)
+    end
+    account.recovered_at = now()
+    account.recovered_by = validation.account.tesserac_id
+    database:set(tesseracid.auth_database_key(account.username), account)
+    record.status = "approved"
+    record.reviewed_at = now()
+    record.reviewed_by = validation.account.username
+    database:set(recovery_key(request_id), record)
+    return true, public_recovery(record)
+end
+
+function tesseracid.server_signout(database, message)
+    local ok, validation = tesseracid.validate_session(database, message.tesserac_id, message.session_token)
+    if not ok then
+        return false, validation
+    end
+    local token = tostring(message.session_token or "")
+    local account = validation.account
+    if account.sessions then
+        account.sessions[token] = nil
+    end
+    if validation.device then
+        validation.device.session_token = nil
+        validation.device.status = "signed_out"
+        validation.device.last_seen = now()
+        account.devices = account.devices or {}
+        account.devices[validation.device.device_id] = validation.device
+        database:set(device_key(validation.device.device_id), validation.device)
+    end
+    database:set(tesseracid.auth_database_key(account.username), account)
+    return true, {
+        signed_out = true,
     }
 end
 

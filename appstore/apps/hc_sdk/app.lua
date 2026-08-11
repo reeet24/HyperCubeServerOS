@@ -21,6 +21,7 @@ local API_WORDS = {
     "HCAPI.bank.status", "HCAPI.bank.purchase", "HCAPI.bank.transfer",
     "HCAPI.phone.status", "HCAPI.phone.send", "HCAPI.phone.inbox",
     "HCAPI.printer.status", "HCAPI.printer.print",
+    "HCAPI.device.storage", "HCAPI.device.sign_out", "HCAPI.auth.recovery_list", "HCAPI.auth.recovery_approve",
     "app.render", "app.on_touch", "app.on_key", "app.on_tick", "app.on_resume", "app.on_pause", "app.on_close",
 }
 

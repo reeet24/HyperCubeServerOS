@@ -882,6 +882,60 @@ function RednetDriver:poll(timeout)
                 device = ok and result.device or nil,
                 account = ok and result.account or nil,
             }, self.protocol)
+        elseif type(message) == "table" and message.type == "auth.signout" then
+            log_event(self, "info", "auth signout sender=" .. tostring(sender) .. " username=" .. tostring(message.username))
+            local ok, result = tesseracid.server_signout(self.database, message)
+            if ok and self.clients[sender] then
+                self.clients[sender].session_token = nil
+                self.clients[sender].device = nil
+                self.clients[sender].device_id = nil
+            end
+            rednet.send(sender, {
+                type = "auth.signout.result",
+                ok = ok == true,
+                result = ok and result or nil,
+                error = ok and nil or result,
+            }, self.protocol)
+        elseif type(message) == "table" and message.type == "auth.recovery.request" then
+            log_event(self, "info", "auth recovery request sender=" .. tostring(sender) .. " username=" .. tostring(message.username or message.login))
+            local ok, result = tesseracid.server_recovery_request(self.database, message, sender)
+            if ok and self.phone and self.phone.system_alert then
+                local resolve_ok, official = tesseracid.server_resolve_login(self.database, { username = "tesserac" })
+                if resolve_ok and official and official.tesserac_id then
+                    self.phone:system_alert(
+                        official.tesserac_id,
+                        "Recovery request " .. tostring(result.request_id) .. " for " .. tostring(result.username or result.tesserac_id),
+                        "Tesserac Auth"
+                    )
+                end
+            end
+            rednet.send(sender, {
+                type = "auth.recovery.request.result",
+                ok = ok == true,
+                result = ok and result or nil,
+                error = ok and nil or result,
+                request_id = ok and result.request_id or nil,
+                status = ok and result.status or nil,
+            }, self.protocol)
+        elseif type(message) == "table" and message.type == "auth.recovery.list" then
+            log_event(self, "debug", "auth recovery list sender=" .. tostring(sender))
+            local ok, result = tesseracid.server_recovery_list(self.database, message)
+            rednet.send(sender, {
+                type = "auth.recovery.list.result",
+                ok = ok == true,
+                result = ok and result or nil,
+                error = ok and nil or result,
+                requests = ok and result.requests or nil,
+            }, self.protocol)
+        elseif type(message) == "table" and message.type == "auth.recovery.approve" then
+            log_event(self, "info", "auth recovery approve sender=" .. tostring(sender) .. " request=" .. tostring(message.request_id))
+            local ok, result = tesseracid.server_recovery_approve(self.database, message)
+            rednet.send(sender, {
+                type = "auth.recovery.approve.result",
+                ok = ok == true,
+                result = ok and result or nil,
+                error = ok and nil or result,
+            }, self.protocol)
         elseif type(message) == "table" and message.type == "device.register" then
             log_event(self, "info", "device.register sender=" .. tostring(sender))
             local ok, result = tesseracid.server_register_device(self.database, message)

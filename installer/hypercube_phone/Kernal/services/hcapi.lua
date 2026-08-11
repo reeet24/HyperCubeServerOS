@@ -1338,7 +1338,8 @@ local function make_dev_api(tphone)
             "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.storage.read", "HCAPI.storage.write",
             "HCAPI.storage.info", "HCAPI.userfs.read", "HCAPI.userfs.write",
             "HCAPI.desktop.open_popup", "HCAPI.desktop.open_terminal", "HCAPI.desktop.open_file", "HCAPI.desktop.drives",
-            "HCAPI.device.storage", "HCAPI.bank.purchase", "HCAPI.phone.send", "app.render", "app.on_key", "app.on_touch", "app.on_tick",
+            "HCAPI.device.storage", "HCAPI.device.sign_out", "HCAPI.auth.recovery_list", "HCAPI.auth.recovery_approve",
+            "HCAPI.bank.purchase", "HCAPI.phone.send", "app.render", "app.on_key", "app.on_touch", "app.on_tick",
         }
         local out = {}
         for _, word in ipairs(words) do
@@ -1426,6 +1427,30 @@ local function make_dev_api(tphone)
     }
 end
 
+local function make_auth_api(tphone)
+    local net = make_net_api(tphone)
+
+    local function request(message, expected, timeout)
+        local reply, err = net.request(message, expected, timeout or 6)
+        if not reply then
+            return false, err or "NoReply"
+        end
+        if not reply.ok then
+            return false, reply.error or "RequestFailed"
+        end
+        return true, reply.result or reply
+    end
+
+    return {
+        recovery_list = function()
+            return request({ type = "auth.recovery.list" }, "auth.recovery.list.result", 6)
+        end,
+        recovery_approve = function(request_id)
+            return request({ type = "auth.recovery.approve", request_id = request_id }, "auth.recovery.approve.result", 6)
+        end,
+    }
+end
+
 local function make_device_api(tphone)
     return {
         os = tphone and tphone.name or nil,
@@ -1444,6 +1469,12 @@ local function make_device_api(tphone)
                 internal = internal,
                 drives = drives,
             }
+        end,
+        sign_out = function()
+            if tphone and tphone.sign_out then
+                return tphone.sign_out()
+            end
+            return false, "SignOutUnavailable"
         end,
         shutdown = function()
             if tphone and tphone.shutdown then
@@ -1479,6 +1510,7 @@ function hcapi.create(tphone, app_id, options)
         storage = make_storage_api(tphone, app_id, options),
         desktop = make_desktop_api(tphone, app_id),
         dev = make_dev_api(tphone),
+        auth = make_auth_api(tphone),
         device = make_device_api(tphone),
         apps = {
             refresh = function()

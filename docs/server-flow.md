@@ -97,6 +97,21 @@ Sign in:
 5. Server registers or refreshes the current device.
 6. Server returns public account and device data.
 
+Sign out:
+
+1. Client sends `auth.signout` with the current TesseracID session.
+2. Server removes that session token and marks the device signed out.
+3. Client deletes `user/tesseracid`, clears the local HCFS identity, and reboots to the sign-in flow.
+
+Recovery:
+
+1. A user selects recovery from the boot identity menu.
+2. Client sends `auth.recovery.request` with the account username or `tid_...`, a new password hash, and device details.
+3. Server stores a pending recovery request under `auth:recovery:<id>` and indexes it for the official `tesserac` account.
+4. The official `tesserac` account opens Settings, refreshes pending requests, and sends `auth.recovery.approve`.
+5. Server updates the account password hash, keeps the existing HCFS key, clears existing sessions, and marks registered devices as requiring recovery sign-in.
+6. The user signs in with the new password after approval.
+
 Sessions are validated by service code through `tesseracid.validate_session(...)`.
 
 ## Device Scopes
@@ -134,7 +149,7 @@ The rednet driver handles these directly:
 
 - Discovery: `server.lookup`, `server.announce`
 - Handshake: `hello`, `welcome`, `server.reject`
-- Identity: `identify`, `auth.resolve`, `auth.signup`, `auth.signin`, `device.register`, `device.list`
+- Identity: `identify`, `auth.resolve`, `auth.signup`, `auth.signin`, `auth.signout`, `auth.recovery.*`, `device.register`, `device.list`
 - Database: `db.status`, `db.get`, `db.set`, `db.delete`
 - Web: `web.register`, `web.publish`, `web.resolve`, `web.get`, `web.request`, `web.list`
 - Phone: `phone.status`, `phone.subscribe`, `phone.pay`, `phone.send`, `phone.inbox`, `phone.sync`, `phone.chats`, `phone.chat`, `phone.chat.delete`

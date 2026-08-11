@@ -463,6 +463,34 @@ function TPhone.ensure_identity()
     return true
 end
 
+function TPhone.sign_out()
+    local identity = TPhone.identity
+    if TPhone.network and TPhone.network.request and identity then
+        local reply, err = TPhone.network:request({
+            type = "auth.signout",
+            tesserac_id = identity.tesserac_id,
+            username = identity.username,
+            session_token = identity.session_token,
+        }, "auth.signout.result", 5)
+        if not reply or not reply.ok then
+            logger.warn("server signout failed: " .. tostring((reply and reply.error) or err), TPhone.root_context)
+        end
+    end
+    if TPhone.tesseracid and TPhone.tesseracid.clear_local then
+        TPhone.tesseracid.clear_local()
+    end
+    TPhone.identity = nil
+    TPhone.hcfs = nil
+    if TPhone.network and TPhone.network.identify then
+        TPhone.network:identify(nil)
+    end
+    logger.info("signed out", TPhone.root_context)
+    if os and os.reboot then
+        os.reboot()
+    end
+    return true
+end
+
 function TPhone.run_app(path, options)
     options = options or {}
     options.apis = options.apis or {}
