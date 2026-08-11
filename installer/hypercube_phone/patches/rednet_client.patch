@@ -4,8 +4,8 @@
   mode = "compose",
   chunks = {
     { copy = { 1, 2 } },
-    { copy = { 6, 87 } },
-    { copy = { 101, 28 } },
+    { copy = { 7, 85 } },
+    { copy = { 101, 27 } },
     { copy = { 420, 6 } },
     { lines = {
       "    self.hostname = options.hostname or (self.mode == \"server\" and \"HyperCubeServer\" or \"TPhone\")",
@@ -18,14 +18,14 @@
       "    self.device = options.device or \"TPhone\"",
       "    self.rom_verified = false",
     } },
-    { copy = { 442, 4 } },
-    { copy = { 477, 45 } },
-    { copy = { 549, 71 } },
+    { copy = { 443, 4 } },
+    { copy = { 479, 26 } },
+    { copy = { 552, 69 } },
     { lines = {
       "        device = device.device or \"TPhone\",",
       "        rom_checksum = device.rom_checksum or self.rom_checksum,",
     } },
-    { copy = { 620, 7 } },
+    { copy = { 621, 6 } },
     { lines = {
       "        if reply.ok == false then",
       "            self.status = \"rejected\"",
@@ -44,12 +44,12 @@
       "        self.rom_verified = true",
       "        self.expected_rom_checksum = reply.rom_checksum",
     } },
-    { copy = { 629, 97 } },
-    { copy = { 1217, 61 } },
+    { copy = { 629, 80 } },
+    { copy = { 1277, 55 } },
     { lines = {
       "            device = options.device or instance.device,",
       "            rom_checksum = options.rom_checksum,",
     } },
-    { copy = { 1278, 18 } },
+    { copy = { 1332, 18 } },
   },
 }
