@@ -309,6 +309,7 @@ function TPhone:check_for_updates()
         os = self.name,
         device = self.device or "TPhone",
         version = self.software_version,
+        rom_checksum = self.rom_checksum,
     }, "update.status.result", 8)
     if not status then
         logger.warn("software update status failed: " .. tostring(status_err), self.root_context)

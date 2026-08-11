@@ -42,8 +42,13 @@ local function record_metadata(hypercube, metadata)
     if type(metadata) ~= "table" or not hypercube.network then
         return
     end
-    if tostring(metadata.device or "TPhone") == "TPhone" and metadata.rom_checksum then
-        hypercube.network.expected_phone_rom_checksum = tostring(metadata.rom_checksum)
+    if metadata.rom_checksum then
+        local device = tostring(metadata.device or "TPhone")
+        hypercube.network.expected_rom_checksums = hypercube.network.expected_rom_checksums or {}
+        hypercube.network.expected_rom_checksums[device] = tostring(metadata.rom_checksum)
+        if device == "TPhone" then
+            hypercube.network.expected_phone_rom_checksum = tostring(metadata.rom_checksum)
+        end
     end
 end
 
@@ -80,18 +85,22 @@ function software_updates.install(hypercube)
             or "0.0.0"
         if message.type == "update.status" then
             local current = tostring(message.version or "")
+            local current_checksum = tostring(message.rom_checksum or "")
             local metadata_ok, metadata = update_metadata_for_request(hypercube, message)
             if metadata_ok then
                 record_metadata(hypercube, metadata)
             end
+            local server_checksum = metadata_ok and metadata and metadata.rom_checksum or nil
             reply(rednet, sender, network.protocol, "update.status.result", true, {
                 os = metadata_ok and metadata.os or tostring(message.os or "HyperCube"),
                 device = metadata_ok and metadata.device or tostring(message.device or "TPhone"),
                 version = version,
-                rom_checksum = metadata_ok and metadata.rom_checksum or nil,
+                rom_checksum = server_checksum,
                 checksum_available = metadata_ok == true,
                 checksum_error = metadata_ok and nil or metadata,
-                update_available = current ~= version,
+                update_available = current ~= version
+                    or (server_checksum and current_checksum ~= "" and tostring(server_checksum) ~= current_checksum)
+                    or false,
             })
         elseif message.type == "update.download" then
             local ok, result = build_package_for_request(hypercube, message)
