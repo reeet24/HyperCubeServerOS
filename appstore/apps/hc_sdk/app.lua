@@ -590,6 +590,106 @@ local function draw_project(ctx, state, y)
     end
 end
 
+local LUA_KEYWORDS = {
+    ["and"] = true,
+    ["break"] = true,
+    ["do"] = true,
+    ["else"] = true,
+    ["elseif"] = true,
+    ["end"] = true,
+    ["false"] = true,
+    ["for"] = true,
+    ["function"] = true,
+    ["if"] = true,
+    ["in"] = true,
+    ["local"] = true,
+    ["nil"] = true,
+    ["not"] = true,
+    ["or"] = true,
+    ["repeat"] = true,
+    ["return"] = true,
+    ["then"] = true,
+    ["true"] = true,
+    ["until"] = true,
+    ["while"] = true,
+}
+
+local SPECIAL_NAMES = {
+    HCAPI = C.cyan,
+    api = C.cyan,
+    app = C.green,
+    ctx = C.yellow,
+    state = C.yellow,
+    C = C.purple,
+    colors = C.purple,
+    keys = C.purple,
+}
+
+local function draw_code_segment(ctx, x, y, text, fg)
+    if text == "" then
+        return x
+    end
+    api.screen.write(x, y, text, fg, C.black)
+    return x + #text
+end
+
+local function draw_code_line(ctx, y, text)
+    local width = math.max(1, ctx.width)
+    text = tostring(text or ""):sub(1, width)
+    api.screen.write(ctx.x, y, string.rep(" ", width), C.lightGray, C.black)
+
+    local x = ctx.x
+    local index = 1
+    while index <= #text and x < ctx.x + width do
+        local two = text:sub(index, index + 1)
+        local ch = text:sub(index, index)
+
+        if two == "--" then
+            x = draw_code_segment(ctx, x, y, text:sub(index), C.gray)
+            break
+        elseif ch == "\"" or ch == "'" then
+            local quote = ch
+            local finish = index + 1
+            local escaped = false
+            while finish <= #text do
+                local current = text:sub(finish, finish)
+                if escaped then
+                    escaped = false
+                elseif current == "\\" then
+                    escaped = true
+                elseif current == quote then
+                    break
+                end
+                finish = finish + 1
+            end
+            x = draw_code_segment(ctx, x, y, text:sub(index, math.min(finish, #text)), C.orange)
+            index = math.min(finish + 1, #text + 1)
+        elseif ch:match("[%a_]") then
+            local finish = index
+            while finish <= #text and text:sub(finish, finish):match("[%w_]") do
+                finish = finish + 1
+            end
+            local word = text:sub(index, finish - 1)
+            local color = SPECIAL_NAMES[word] or (LUA_KEYWORDS[word] and C.blue) or C.lightGray
+            x = draw_code_segment(ctx, x, y, word, color)
+            index = finish
+        elseif ch:match("%d") then
+            local finish = index
+            while finish <= #text and text:sub(finish, finish):match("[%w%.]") do
+                finish = finish + 1
+            end
+            x = draw_code_segment(ctx, x, y, text:sub(index, finish - 1), C.yellow)
+            index = finish
+        elseif ch:match("[%+%-%*%/%=%%<>#{}%[%]%(%)%,%.:]") then
+            x = draw_code_segment(ctx, x, y, ch, C.white)
+            index = index + 1
+        else
+            x = draw_code_segment(ctx, x, y, ch, C.lightGray)
+            index = index + 1
+        end
+    end
+end
+
 local function draw_editor(ctx, state, y)
     api.screen.write(ctx.x, y, "Editing " .. tostring(state.file), C.cyan, C.black)
     ctx.buttons.prev_file = api.screen.button("prev_file", ctx.x, y + 1, 3, "<", { fg = C.white, bg = C.blue })
@@ -601,7 +701,7 @@ local function draw_editor(ctx, state, y)
     state.edit_scroll = clamp_scroll(state.edit_scroll, #lines, max_rows)
     local first = math.max(1, (state.edit_scroll or 0) + 1)
     for i = 1, math.min(max_rows, #lines - first + 1) do
-        api.screen.write(ctx.x, y + 2 + i, truncate(lines[first + i - 1], ctx.width), C.lightGray, C.black)
+        draw_code_line(ctx, y + 2 + i, lines[first + i - 1])
     end
 end
 
