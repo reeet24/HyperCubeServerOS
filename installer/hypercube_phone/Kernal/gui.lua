@@ -130,6 +130,9 @@ local function draw_home_indicator(screen, width, height)
     screen:rect(center_x(width, string.rep(" ", w)), height, w, 1, C.lightGray)
 end
 
+local find_app
+local dock_order
+
 local function draw_desktop_dock(screen, width, height, installed)
     local dock_y = height
     local dock_w = math.min(width - 4, math.max(18, math.floor(width * 0.70)))
@@ -170,9 +173,6 @@ local function draw_desktop_dock(screen, width, height, installed)
     end
     return buttons
 end
-
-local find_app
-local dock_order
 
 local function app_render_mode(app)
     local mode = app and app.manifest and app.manifest.render_mode or "window"
