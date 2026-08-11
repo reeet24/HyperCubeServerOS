@@ -2,7 +2,7 @@
     id = "hc_sdk",
     title = "HyperCube SDK",
     label = "SDK",
-    version = "0.3.3",
+    version = "0.4.0",
     author = "Tesserac",
     description = "Official desktop SDK for building HyperCube user apps.",
     devices = { "TDesktop", "TBusinessDesktop" },

@@ -11,8 +11,7 @@ local app = {
 }
 
 local DOC_IDS = { "desktop-sdk", "userapp-api", "banking-api", "web-api", "user-server-api" }
-local TABS = { "project", "edit", "manifest", "docs", "api", "build", "term" }
-local MENU_ACTIONS = { "save", "install", "run", "term" }
+local MENU_ACTIONS = { "projects", "manifest", "docs", "api", "build", "save", "install", "run", "term" }
 local API_WORDS = {
     "HCAPI.screen.write", "HCAPI.screen.write_wrap", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.wrap",
     "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.fs.delete",
@@ -190,6 +189,35 @@ local function project_files(root, dir, out)
     return out
 end
 
+local function project_tree(root, dir, out, collapsed)
+    out = out or {}
+    collapsed = collapsed or {}
+    dir = dir or ""
+    local full = dir == "" and root or (root .. "/" .. dir)
+    local listing = list_dir(full)
+    if type(listing) ~= "table" then
+        return out
+    end
+    table.sort(listing)
+    for _, child in ipairs(listing) do
+        local rel = dir == "" and child or (dir .. "/" .. child)
+        local child_full = root .. "/" .. rel
+        local children = list_dir(child_full)
+        local is_dir = type(children) == "table"
+        out[#out + 1] = {
+            path = rel,
+            name = child,
+            depth = select(2, tostring(rel):gsub("/", "")),
+            dir = is_dir,
+            collapsed = is_dir and collapsed[rel] == true,
+        }
+        if is_dir and not collapsed[rel] then
+            project_tree(root, rel, out, collapsed)
+        end
+    end
+    return out
+end
+
 local function load_projects(state)
     state.projects = {}
     local roots = list_dir("/dev/apps")
@@ -201,6 +229,8 @@ local function load_projects(state)
     table.sort(state.projects)
 end
 
+local save_current_file
+
 local function load_current_file(state)
     state.files = project_files(state.root)
     if #state.files == 0 then
@@ -208,11 +238,65 @@ local function load_current_file(state)
     end
     state.file_index = math.max(1, math.min(tonumber(state.file_index or 1) or 1, #state.files))
     state.file = state.files[state.file_index]
+    state.open_files = state.open_files or { state.file }
+    local open_seen = false
+    for _, file in ipairs(state.open_files) do
+        if file == state.file then
+            open_seen = true
+            break
+        end
+    end
+    if not open_seen then
+        state.open_files[#state.open_files + 1] = state.file
+    end
     state.source = read_file(state.root .. "/" .. state.file) or ""
     state.cursor = #(state.source or "")
     state.selection_anchor = nil
     state.lint_dirty = true
     state.edit_scroll = 0
+end
+
+local function switch_file_path(state, file)
+    file = rel_path(file)
+    if not file then
+        return false, "InvalidPath"
+    end
+    state.files = project_files(state.root)
+    for i, candidate in ipairs(state.files) do
+        if candidate == file then
+            state.file_index = i
+            load_current_file(state)
+            return true
+        end
+    end
+    return false, "FileNotFound"
+end
+
+local function open_file_path(state, file)
+    file = rel_path(file)
+    if not file then
+        return false, "InvalidPath"
+    end
+    save_current_file(state)
+    state.files = project_files(state.root)
+    local found = false
+    for i, candidate in ipairs(state.files) do
+        if candidate == file then
+            found = true
+            break
+        end
+    end
+    if not found then
+        write_file(state.root .. "/" .. file, "")
+        state.files = project_files(state.root)
+        for i, candidate in ipairs(state.files) do
+            if candidate == file then
+                state.file_index = i
+                break
+            end
+        end
+    end
+    return switch_file_path(state, file)
 end
 
 local function clamp_scroll(value, total, visible)
@@ -403,6 +487,7 @@ local function create_project(state, id)
     state.root = root
     state.manifest = manifest
     state.status = "Created " .. root
+    state.open_files = {}
     load_projects(state)
     load_current_file(state)
 end
@@ -416,11 +501,12 @@ local function load_project(state, id)
         return
     end
     state.manifest = load_manifest(state.root, id)
+    state.open_files = {}
     load_current_file(state)
     state.status = "Loaded " .. id
 end
 
-local function save_current_file(state)
+save_current_file = function(state)
     local ok, err = write_file(state.root .. "/" .. state.file, state.source or "")
     state.status = ok and ("Saved " .. state.file) or tostring(err)
     if ok then
@@ -707,7 +793,7 @@ local function init(state)
         return
     end
     state.ready = true
-    state.tab = "project"
+    state.tab = "edit"
     state.app_id = "my_app"
     state.new_id = "my_app"
     state.doc_id = "desktop-sdk"
@@ -715,7 +801,12 @@ local function init(state)
     state.term_input = ""
     state.term_lines = { "HyperCube SDK terminal", "Type help" }
     state.menu_open = false
+    state.popup = nil
+    state.context_menu = nil
     state.sidebar_open = true
+    state.collapsed = {}
+    state.open_files = {}
+    state.file_clipboard = nil
     state.clipboard = ""
     state.ctrl_down = false
     state.drag_selecting = false
@@ -739,39 +830,54 @@ local function truncate(text, width)
     return text
 end
 
-local function draw_tabs(ctx, state)
+local function draw_file_tabs(ctx, state)
+    local menu_w = 6
+    local max_x = ctx.x + ctx.width - menu_w - 1
     local x = ctx.x
-    for _, tab in ipairs(TABS) do
-        local w = math.min(#tab + 2, 10)
-        if x + w > ctx.x + ctx.width then
+    state.open_files = state.open_files or { state.file or "app.lua" }
+    for i, file in ipairs(state.open_files) do
+        if x >= max_x then
             break
         end
-        ctx.buttons["tab_" .. tab] = api.screen.button("tab_" .. tab, x, ctx.y, w, truncate(tab, w), {
-            fg = state.tab == tab and C.black or C.white,
-            bg = state.tab == tab and C.yellow or C.gray,
+        local label = tostring(file or ""):match("([^/]+)$") or tostring(file or "")
+        if state.dirty and file == state.file then
+            label = "*" .. label
+        end
+        local w = math.min(math.max(6, #label + 2), math.max(4, max_x - x + 1))
+        ctx.buttons["open_file_" .. tostring(i)] = api.screen.button("open_file_" .. tostring(i), x, ctx.y, w, truncate(label, w), {
+            fg = file == state.file and C.black or C.white,
+            bg = file == state.file and C.yellow or C.gray,
         })
         x = x + w + 1
     end
+    ctx.buttons.menu = api.screen.button("menu", math.max(ctx.x, ctx.x + ctx.width - menu_w + 1), ctx.y, menu_w, "Menu", { fg = C.white, bg = C.blue })
 end
 
-local function draw_toolbar(ctx, state, y)
-    ctx.buttons.menu = api.screen.button("menu", ctx.x, y, 6, "Menu", { fg = C.white, bg = C.blue })
-    local status_x = ctx.x + 8
-    api.screen.write(status_x, y, truncate(state.status or "", math.max(1, ctx.width - 8)), C.lightGray, C.black)
-    if state.menu_open then
-        local labels = {
-            save = "Save",
-            install = "Install",
-            run = "Run",
-            term = "Terminal",
-        }
-        local row = y + 1
-        for _, action in ipairs(MENU_ACTIONS) do
-            ctx.buttons["menu_" .. action] = api.screen.button("menu_" .. action, ctx.x, row, 10, labels[action] or action, {
-                fg = C.white,
-                bg = action == "run" and C.green or C.gray,
-            })
-            row = row + 1
+local function draw_menu_overlay(ctx, state)
+    if not state.menu_open then
+        return
+    end
+    local labels = {
+        projects = "Projects",
+        manifest = "Manifest",
+        docs = "Docs",
+        api = "API",
+        build = "Build",
+        save = "Save",
+        install = "Install",
+        run = "Run",
+        term = "Terminal",
+    }
+    local x = math.max(ctx.x, ctx.x + ctx.width - 13)
+    local row = ctx.y + 1
+    for _, action in ipairs(MENU_ACTIONS) do
+        ctx.buttons["menu_" .. action] = api.screen.button("menu_" .. action, x, row, 13, labels[action] or action, {
+            fg = C.white,
+            bg = action == "run" and C.green or C.gray,
+        })
+        row = row + 1
+        if row > ctx.y + ctx.height - 1 then
+            break
         end
     end
 end
@@ -780,51 +886,82 @@ local function draw_file_sidebar(ctx, state, y)
     local width = state.sidebar_open and math.min(18, math.max(10, math.floor(ctx.width * 0.32))) or 3
     local bottom = ctx.y + ctx.height - 1
     local sidebar_height = math.max(1, bottom - y + 1)
+    state.sidebar_layout = { x = ctx.x, y = y, width = width, height = sidebar_height }
     api.screen.rect(ctx.x, y, width, sidebar_height, C.gray)
     ctx.buttons.sidebar_toggle = api.screen.button("sidebar_toggle", ctx.x, y, 3, state.sidebar_open and "<<" or ">>", { fg = C.white, bg = C.blue })
     if not state.sidebar_open then
         return width + 1
     end
 
-    ctx.buttons.prev_file = api.screen.button("prev_file", ctx.x + 4, y, 3, "<", { fg = C.white, bg = C.blue })
-    ctx.buttons.next_file = api.screen.button("next_file", ctx.x + 8, y, 3, ">", { fg = C.white, bg = C.blue })
-    ctx.buttons.new_file = api.screen.button("new_file", ctx.x + 12, y, math.max(1, math.min(5, width - 12)), "+", { fg = C.white, bg = C.green })
-
-    local row = y + 2
+    ctx.buttons.sidebar_root = api.screen.button("sidebar_root", ctx.x + 4, y, math.max(1, width - 4), truncate(state.app_id or "project", math.max(1, width - 4)), { fg = C.white, bg = C.gray })
+    local entries = project_tree(state.root, "", {}, state.collapsed or {})
+    state.tree_entries = entries
+    local row = y + 1
     local visible = math.max(0, bottom - row + 1)
-    state.files_scroll = clamp_scroll(state.files_scroll, #(state.files or {}), visible)
+    state.files_scroll = clamp_scroll(state.files_scroll, #entries, visible)
     local first = (state.files_scroll or 0) + 1
-    for i = first, math.min(#(state.files or {}), first + visible - 1) do
-        local file = state.files[i]
-        local depth = 0
-        for _ in tostring(file or ""):gmatch("/") do
-            depth = depth + 1
-        end
-        local name = tostring(file or ""):match("([^/]+)$") or tostring(file or "")
-        local label = string.rep(" ", math.min(3, depth)) .. name
-        local bg = i == state.file_index and C.black or C.gray
-        local fg = i == state.file_index and C.yellow or C.white
-        ctx.buttons["file_" .. tostring(i)] = api.screen.button("file_" .. tostring(i), ctx.x, row, width, truncate(label, width), { fg = fg, bg = bg })
+    for i = first, math.min(#entries, first + visible - 1) do
+        local item = entries[i]
+        local prefix = item.dir and (item.collapsed and "> " or "v ") or "  "
+        local label = string.rep(" ", math.min(4, item.depth or 0)) .. prefix .. tostring(item.name or item.path)
+        local bg = item.path == state.file and C.black or C.gray
+        local fg = item.dir and C.cyan or (item.path == state.file and C.yellow or C.white)
+        ctx.buttons["tree_" .. tostring(i)] = api.screen.button("tree_" .. tostring(i), ctx.x, row, width, truncate(label, width), { fg = fg, bg = bg })
         row = row + 1
     end
     return width + 1
 end
 
-local function draw_project(ctx, state, y)
-    api.screen.write(ctx.x, y, "Projects in /dev/apps", C.cyan, C.black)
-    ctx.buttons.new_project = api.screen.button("new_project", ctx.x, y + 1, 6, "New", { fg = C.white, bg = C.green })
-    ctx.buttons.prev_project = api.screen.button("prev_project", ctx.x + 7, y + 1, 3, "<", { fg = C.white, bg = C.blue })
-    ctx.buttons.next_project = api.screen.button("next_project", ctx.x + 11, y + 1, 3, ">", { fg = C.white, bg = C.blue })
-    api.screen.write(ctx.x + 15, y + 1, "new id: " .. tostring(state.new_id or ""), C.white, C.black)
+local function draw_context_menu(ctx, state)
+    local menu = state.context_menu
+    if type(menu) ~= "table" then
+        return
+    end
+    local actions
+    if menu.path == "" then
+        actions = { "new_file", "new_folder", "paste" }
+    elseif menu.dir then
+        actions = { "new_file", "new_folder", "paste", "copy", "cut", "delete" }
+    else
+        actions = { "open", "copy", "cut", "paste", "delete" }
+    end
+    local labels = {
+        open = "Open",
+        copy = "Copy",
+        cut = "Cut",
+        paste = "Paste",
+        delete = "Delete",
+        new_file = "New File",
+        new_folder = "New Folder",
+    }
+    local x = math.max(ctx.x, math.min(menu.x or ctx.x, ctx.x + ctx.width - 11))
+    local y = math.max(ctx.y, math.min(menu.y or ctx.y, ctx.y + ctx.height - #actions))
+    for i, action in ipairs(actions) do
+        ctx.buttons["ctx_" .. action] = api.screen.button("ctx_" .. action, x, y + i - 1, 11, labels[action] or action, { fg = C.white, bg = C.gray })
+    end
+end
+
+local function draw_project_popup(ctx, state)
+    if state.popup ~= "projects" then
+        return
+    end
+    local w = math.min(ctx.width - 2, 30)
+    local h = math.min(ctx.height - 2, 12)
+    local x = ctx.x + math.max(1, math.floor((ctx.width - w) / 2))
+    local y = ctx.y + math.max(1, math.floor((ctx.height - h) / 2))
+    api.screen.rect(x, y, w, h, C.black)
+    api.screen.write(x + 1, y, truncate("Projects", math.max(1, w - 2)), C.yellow, C.black)
+    ctx.buttons.popup_close = api.screen.button("popup_close", x + w - 2, y, 2, "x", { fg = C.red, bg = C.black })
+    ctx.buttons.new_project = api.screen.button("new_project", x + 1, y + 1, 6, "New", { fg = C.white, bg = C.green })
+    api.screen.write(x + 8, y + 1, truncate("id: " .. tostring(state.new_id or ""), math.max(1, w - 9)), C.white, C.black)
     local row = y + 3
-    local visible = math.max(1, ctx.y + ctx.height - row - 1)
+    local visible = math.max(1, y + h - row - 1)
     state.project_scroll = clamp_scroll(state.project_scroll, #(state.projects or {}), visible)
     local first = (state.project_scroll or 0) + 1
     for i = first, math.min(#(state.projects or {}), first + visible - 1) do
         local id = state.projects[i]
-        if row >= ctx.y + ctx.height - 1 then break end
-        local marker = id == state.app_id and "> " or "  "
-        api.screen.write(ctx.x, row, marker .. id, id == state.app_id and C.yellow or C.lightGray, C.black)
+        local bg = id == state.app_id and C.gray or C.black
+        ctx.buttons["project_" .. tostring(i)] = api.screen.button("project_" .. tostring(i), x + 1, row, w - 2, truncate(id, w - 2), { fg = id == state.app_id and C.yellow or C.white, bg = bg })
         row = row + 1
     end
 end
@@ -1000,41 +1137,6 @@ local function draw_manifest(ctx, state, y)
     end
 end
 
-local function draw_files(ctx, state, y)
-    api.screen.write(ctx.x, y, "Project files", C.cyan, C.black)
-    ctx.buttons.prev_file = api.screen.button("prev_file", ctx.x, y + 1, 3, "<", { fg = C.white, bg = C.blue })
-    ctx.buttons.next_file = api.screen.button("next_file", ctx.x + 4, y + 1, 3, ">", { fg = C.white, bg = C.blue })
-    ctx.buttons.delete_file = api.screen.button("delete_file", ctx.x + 8, y + 1, 7, "Delete", { fg = C.white, bg = C.red })
-    local row = y + 3
-    local visible = math.max(1, ctx.y + ctx.height - row - 1)
-    state.files_scroll = clamp_scroll(state.files_scroll, #(state.files or {}), visible)
-    local first = (state.files_scroll or 0) + 1
-    for i = first, math.min(#(state.files or {}), first + visible - 1) do
-        local file = state.files[i]
-        if row >= ctx.y + ctx.height - 1 then break end
-        local marker = i == state.file_index and "> " or "  "
-        api.screen.write(ctx.x, row, marker .. file, i == state.file_index and C.yellow or C.lightGray, C.black)
-        row = row + 1
-    end
-end
-
-local function draw_lint(ctx, state, y)
-    lint_project(state)
-    api.screen.write(ctx.x, y, "Diagnostics", C.cyan, C.black)
-    if #(state.diagnostics or {}) == 0 then
-        api.screen.write(ctx.x, y + 1, "No diagnostics.", C.green, C.black)
-        return
-    end
-    local visible = math.max(1, ctx.height - 4)
-    state.lint_scroll = clamp_scroll(state.lint_scroll, #(state.diagnostics or {}), visible)
-    local first = (state.lint_scroll or 0) + 1
-    for row = 1, math.min(visible, #(state.diagnostics or {}) - first + 1) do
-        local item = state.diagnostics[first + row - 1]
-        local text = tostring(item.file) .. " " .. tostring(item.severity) .. ": " .. tostring(item.message)
-        api.screen.write(ctx.x, y + row, truncate(text, ctx.width), item.severity == "error" and C.red or C.orange, C.black)
-    end
-end
-
 local function draw_docs(ctx, state, y)
     ctx.buttons.doc_prev = api.screen.button("doc_prev", ctx.x, y, 3, "<", { fg = C.white, bg = C.blue })
     ctx.buttons.doc_next = api.screen.button("doc_next", ctx.x + 4, y, 3, ">", { fg = C.white, bg = C.blue })
@@ -1101,16 +1203,9 @@ function app.render(ctx)
         return
     end
     api.screen.rect(ctx.x, ctx.y, ctx.width, ctx.height, C.black)
-    draw_tabs(ctx, state)
+    draw_file_tabs(ctx, state)
     local y = ctx.y + 2
-    draw_toolbar(ctx, state, y)
-    y = y + 2
-    if state.menu_open then
-        y = y + #MENU_ACTIONS
-    end
-    if state.tab == "project" then
-        draw_project(ctx, state, y)
-    elseif state.tab == "edit" then
+    if state.tab == "edit" then
         local sidebar_width = draw_file_sidebar(ctx, state, y)
         local editor_ctx = {
             x = ctx.x + sidebar_width,
@@ -1131,29 +1226,9 @@ function app.render(ctx)
     else
         draw_term(ctx, state, y, ctx.height - 4, ctx.width)
     end
-end
-
-local function cycle_project(state, delta)
-    if #(state.projects or {}) == 0 then
-        load_projects(state)
-    end
-    if #(state.projects or {}) == 0 then return end
-    local index = 1
-    for i, id in ipairs(state.projects) do
-        if id == state.app_id then index = i break end
-    end
-    index = index + delta
-    if index < 1 then index = #state.projects end
-    if index > #state.projects then index = 1 end
-    load_project(state, state.projects[index])
-end
-
-local function cycle_file(state, delta)
-    save_current_file(state)
-    state.file_index = (state.file_index or 1) + delta
-    if state.file_index < 1 then state.file_index = #(state.files or { "app.lua" }) end
-    if state.file_index > #(state.files or {}) then state.file_index = 1 end
-    load_current_file(state)
+    draw_project_popup(ctx, state)
+    draw_context_menu(ctx, state)
+    draw_menu_overlay(ctx, state)
 end
 
 local function open_terminal(state)
@@ -1171,15 +1246,115 @@ local function key_is_ctrl(key)
     return keys and (key == keys.leftCtrl or key == keys.rightCtrl or key == keys.leftControl or key == keys.rightControl)
 end
 
-local function select_file_index(state, index)
-    index = tonumber(index)
-    if not index or not state.files or not state.files[index] then
+local function parent_dir(path)
+    return tostring(path or ""):match("^(.*)/[^/]+$") or ""
+end
+
+local function copy_tree(state, from_rel, to_rel)
+    local from = state.root .. "/" .. tostring(from_rel or "")
+    local listing = list_dir(from)
+    if type(listing) == "table" then
+        api.userfs.mkdir(state.root .. "/" .. tostring(to_rel or ""))
+        for _, child in ipairs(listing) do
+            local child_from = tostring(from_rel or "") == "" and child or (from_rel .. "/" .. child)
+            local child_to = tostring(to_rel or "") == "" and child or (to_rel .. "/" .. child)
+            copy_tree(state, child_from, child_to)
+        end
+        return true
+    end
+    local data, err = read_file(from)
+    if data == nil then
+        return false, err
+    end
+    return write_file(state.root .. "/" .. tostring(to_rel or ""), data)
+end
+
+local function basename(path)
+    return tostring(path or ""):match("([^/]+)$") or tostring(path or "")
+end
+
+local function unique_child_name(state, dir, name, is_dir)
+    dir = tostring(dir or "")
+    name = tostring(name or (is_dir and "folder" or "file.lua"))
+    local base, ext = name:match("^(.*)(%.[^%.]+)$")
+    base = base or name
+    ext = ext or ""
+    local candidate = name
+    local n = 1
+    while api.userfs.exists(state.root .. "/" .. (dir ~= "" and (dir .. "/" .. candidate) or candidate)) do
+        n = n + 1
+        candidate = base .. tostring(n) .. ext
+    end
+    return dir ~= "" and (dir .. "/" .. candidate) or candidate
+end
+
+local function create_child(state, dir, is_dir)
+    local path = unique_child_name(state, dir, is_dir and "folder" or "file.lua", is_dir)
+    if is_dir then
+        api.userfs.mkdir(state.root .. "/" .. path)
+    else
+        write_file(state.root .. "/" .. path, "")
+        open_file_path(state, path)
+    end
+    state.files = project_files(state.root)
+    state.status = "Created " .. path
+end
+
+local function delete_path(state, path)
+    if path == "" or path == "app.lua" or path == "manifest" then
+        state.status = "Cannot delete " .. path
         return false
     end
-    save_current_file(state)
-    state.file_index = index
-    load_current_file(state)
+    api.userfs.delete(state.root .. "/" .. path)
+    local remaining_open = {}
+    for _, file in ipairs(state.open_files or {}) do
+        if file ~= path and file:sub(1, #path + 1) ~= path .. "/" then
+            remaining_open[#remaining_open + 1] = file
+        end
+    end
+    state.open_files = remaining_open
+    state.files = project_files(state.root)
+    if state.file == path or state.file:sub(1, #path + 1) == path .. "/" then
+        state.file_index = 1
+        load_current_file(state)
+    end
+    state.status = "Deleted " .. path
     return true
+end
+
+local function paste_into(state, target)
+    local clip = state.file_clipboard
+    if type(clip) ~= "table" or not clip.path then
+        state.status = "Nothing to paste"
+        return false
+    end
+    local target_is_dir = type(list_dir(state.root .. "/" .. tostring(target or ""))) == "table"
+    local dir = target_is_dir and tostring(target or "") or parent_dir(target)
+    local dest = unique_child_name(state, dir, basename(clip.path), clip.dir)
+    local ok, err = copy_tree(state, clip.path, dest)
+    if ok and clip.cut then
+        local moved_current = state.file == clip.path or state.file:sub(1, #clip.path + 1) == clip.path .. "/"
+        api.userfs.delete(state.root .. "/" .. clip.path)
+        local remaining_open = {}
+        for _, file in ipairs(state.open_files or {}) do
+            if file ~= clip.path and file:sub(1, #clip.path + 1) ~= clip.path .. "/" then
+                remaining_open[#remaining_open + 1] = file
+            end
+        end
+        state.open_files = remaining_open
+        if moved_current then
+            if clip.dir then
+                state.file_index = 1
+                load_current_file(state)
+            else
+                switch_file_path(state, dest)
+            end
+        end
+        state.file_clipboard = nil
+    end
+    state.files = project_files(state.root)
+    state.status = ok and ("Pasted " .. dest) or tostring(err)
+    return ok
 end
 
 local function select_all(state)
@@ -1217,14 +1392,15 @@ function app.on_touch(ctx)
         end
         if ctx.window and ctx.window.popup_kind == "terminal" then
             state.term_scroll = (state.term_scroll or 0) - delta
-        elseif state.tab == "project" then
+        elseif state.popup == "projects" then
             state.project_scroll = (state.project_scroll or 0) + delta
         elseif state.tab == "edit" then
-            state.edit_scroll = (state.edit_scroll or 0) + delta
-        elseif state.tab == "files" then
-            state.files_scroll = (state.files_scroll or 0) + delta
-        elseif state.tab == "lint" then
-            state.lint_scroll = (state.lint_scroll or 0) + delta
+            local sidebar = state.sidebar_layout
+            if sidebar and event.x >= sidebar.x and event.x < sidebar.x + sidebar.width and event.y >= sidebar.y and event.y < sidebar.y + sidebar.height then
+                state.files_scroll = (state.files_scroll or 0) + delta
+            else
+                state.edit_scroll = (state.edit_scroll or 0) + delta
+            end
         elseif state.tab == "docs" then
             state.doc_scroll = (state.doc_scroll or 0) + delta
         elseif state.tab == "api" then
@@ -1237,15 +1413,47 @@ function app.on_touch(ctx)
         return true
     end
     local id = tostring(ctx.button_id or "")
-    local tab = id:match("^tab_(.+)$")
-    if tab then
-        state.tab = tab
-        state.menu_open = false
-    elseif id == "menu" then
+    if state.context_menu and not id:match("^ctx_") then
+        state.context_menu = nil
+    end
+    if id == "menu" then
         state.menu_open = not state.menu_open
+        state.context_menu = nil
+    elseif id == "popup_close" then
+        state.popup = nil
+    elseif id:match("^project_%d+$") then
+        local index = tonumber(id:match("(%d+)$"))
+        if state.projects and state.projects[index] then
+            save_current_file(state)
+            load_project(state, state.projects[index])
+            state.tab = "edit"
+            state.popup = nil
+        end
+    elseif id:match("^open_file_%d+$") then
+        local index = tonumber(id:match("(%d+)$"))
+        if state.open_files and state.open_files[index] then
+            open_file_path(state, state.open_files[index])
+            state.tab = "edit"
+        end
     elseif id == "menu_save" then
         save_current_file(state)
         save_manifest(state)
+        state.menu_open = false
+    elseif id == "menu_projects" then
+        load_projects(state)
+        state.popup = "projects"
+        state.menu_open = false
+    elseif id == "menu_manifest" then
+        state.tab = "manifest"
+        state.menu_open = false
+    elseif id == "menu_docs" then
+        state.tab = "docs"
+        state.menu_open = false
+    elseif id == "menu_api" then
+        state.tab = "api"
+        state.menu_open = false
+    elseif id == "menu_build" then
+        state.tab = "build"
         state.menu_open = false
     elseif id == "menu_install" then
         install_project(state, false)
@@ -1258,30 +1466,59 @@ function app.on_touch(ctx)
         state.menu_open = false
     elseif id == "sidebar_toggle" then
         state.sidebar_open = not state.sidebar_open
+    elseif id == "sidebar_root" then
+        if event.button == 2 then
+            state.context_menu = {
+                path = "",
+                dir = true,
+                x = event.x,
+                y = event.y,
+            }
+        end
+    elseif id:match("^ctx_") then
+        local action = id:match("^ctx_(.+)$")
+        local menu = state.context_menu or {}
+        local path = menu.path or ""
+        local target_dir = menu.dir and path or parent_dir(path)
+        if action == "open" and not menu.dir then
+            open_file_path(state, path)
+        elseif action == "copy" then
+            state.file_clipboard = { path = path, dir = menu.dir, cut = false }
+            state.status = "Copied " .. path
+        elseif action == "cut" then
+            state.file_clipboard = { path = path, dir = menu.dir, cut = true }
+            state.status = "Cut " .. path
+        elseif action == "paste" then
+            paste_into(state, path)
+        elseif action == "delete" then
+            delete_path(state, path)
+        elseif action == "new_file" then
+            create_child(state, target_dir, false)
+        elseif action == "new_folder" then
+            create_child(state, target_dir, true)
+        end
+        state.context_menu = nil
     elseif id == "new_project" then
         create_project(state, state.new_id)
-    elseif id == "prev_project" then
-        cycle_project(state, -1)
-    elseif id == "next_project" then
-        cycle_project(state, 1)
-    elseif id == "prev_file" then
-        cycle_file(state, -1)
-    elseif id == "next_file" then
-        cycle_file(state, 1)
-    elseif id == "new_file" then
-        local name = "lib/module" .. tostring(#(state.files or {}) + 1) .. ".lua"
-        write_file(state.root .. "/" .. name, "return {}\n")
-        state.files = project_files(state.root)
-        for i, file in ipairs(state.files) do
-            if file == name then state.file_index = i break end
+        state.popup = nil
+    elseif id:match("^tree_%d+$") then
+        local index = tonumber(id:match("(%d+)$"))
+        local item = state.tree_entries and state.tree_entries[index]
+        if item then
+            if event.button == 2 then
+                state.context_menu = {
+                    path = item.path,
+                    dir = item.dir,
+                    x = event.x,
+                    y = event.y,
+                }
+            elseif item.dir then
+                state.collapsed = state.collapsed or {}
+                state.collapsed[item.path] = not state.collapsed[item.path]
+            else
+                open_file_path(state, item.path)
+            end
         end
-        load_current_file(state)
-    elseif id:match("^file_%d+$") then
-        select_file_index(state, tonumber(id:match("(%d+)$")))
-    elseif id == "delete_file" and state.file ~= "app.lua" and state.file ~= "manifest" then
-        api.userfs.delete(state.root .. "/" .. state.file)
-        load_current_file(state)
-        state.status = "Deleted file"
     elseif id == "complete_insert" then
         local list = completions(state.complete_prefix or "HCAPI.")
         if list[1] then
@@ -1382,7 +1619,7 @@ function app.on_key(ctx)
         end
         return false
     end
-    if state.tab == "project" then
+    if state.popup == "projects" then
         if event.type == "char" then
             state.new_id = safe_id(tostring(state.new_id or "") .. tostring(event.raw and event.raw[2] or ""))
             return true
