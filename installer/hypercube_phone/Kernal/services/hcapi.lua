@@ -1,4 +1,5 @@
 local printer_driver_ok, printer_driver = pcall(require, "Kernal.drivers.printer")
+local desktop_storage_ok, desktop_storage = pcall(require, "Kernal.services.desktop_storage")
 
 local hcapi = {}
 
@@ -815,6 +816,123 @@ local function make_userfs_api(tphone, user_fs)
     }
 end
 
+local function safe_relative(path)
+    path = tostring(path or ""):gsub("\\", "/")
+    path = path:gsub("^/+", ""):gsub("^%./", ""):gsub("//+", "/")
+    if path == "." then
+        path = ""
+    end
+    if path:find("..", 1, true) then
+        return nil, "InvalidPath"
+    end
+    path = path:gsub("[^%w%._%-%/]", "_")
+    return path
+end
+
+local function combine_path(a, b)
+    if fs and fs.combine then
+        return fs.combine(a, b)
+    end
+    a = tostring(a or "")
+    b = tostring(b or "")
+    if a == "" then
+        return b
+    end
+    if a:sub(-1) == "/" then
+        return a .. b
+    end
+    return a .. "/" .. b
+end
+
+local function ensure_parent(path)
+    local dir = tostring(path or ""):match("^(.*)/[^/]+$")
+    if dir and dir ~= "" then
+        return ensure_dir(dir)
+    end
+    return true
+end
+
+local function make_storage_api(tphone, app_id, options)
+    options = type(options) == "table" and options or {}
+    local root, mounted_drive
+    if desktop_storage_ok and desktop_storage and desktop_storage.data_root_for_app then
+        root, mounted_drive = desktop_storage.data_root_for_app(app_id, options.app_dir)
+    end
+    root = root or combine_path("user/appdata", tostring(app_id or "app"):gsub("[^%w_%-%.]", "_"))
+
+    local function full_path(path)
+        local relative, err = safe_relative(path or "")
+        if not relative then
+            return nil, err
+        end
+        if relative == "" then
+            return root
+        end
+        return combine_path(root, relative)
+    end
+
+    return {
+        info = function()
+            return {
+                root = root,
+                mounted = mounted_drive ~= nil,
+                drive = mounted_drive and mounted_drive.name or nil,
+                mount = mounted_drive and mounted_drive.mount or nil,
+            }
+        end,
+        read = function(path)
+            local full, err = full_path(path)
+            if not full then return nil, err end
+            local data = read_all(full)
+            if data == nil then
+                return nil, "NotFound"
+            end
+            return data
+        end,
+        write = function(path, data)
+            local full, err = full_path(path)
+            if not full then return false, err end
+            local ok
+            ok, err = ensure_parent(full)
+            if not ok then return false, err end
+            local handle = fs.open(full, "wb")
+            if not handle then return false, "OpenFailed" end
+            handle.write(tostring(data or ""))
+            handle.close()
+            return true
+        end,
+        mkdir = function(path)
+            local full, err = full_path(path)
+            if not full then return false, err end
+            return ensure_dir(full)
+        end,
+        list = function(path)
+            local full, err = full_path(path)
+            if not full then return nil, err end
+            if fs.exists(full) and fs.isDir(full) then
+                return fs.list(full)
+            end
+            return nil, "NotFound"
+        end,
+        exists = function(path)
+            local full = full_path(path)
+            return full and fs.exists(full) == true
+        end,
+        delete = function(path)
+            local full, err = full_path(path)
+            if not full then return false, err end
+            if full == root then
+                return false, "CannotDeleteRoot"
+            end
+            if fs.exists(full) then
+                fs.delete(full)
+                return true
+            end
+            return false, "NotFound"
+        end,
+    }
+end
+
 local function make_desktop_api(tphone, app_id)
     local function request(action, payload)
         if not is_desktop_device(tphone) then
@@ -891,6 +1009,48 @@ local function make_desktop_api(tphone, app_id)
                     cwd = tostring(options.cwd or "/"),
                 },
             })
+        end,
+        drives = function()
+            if not is_desktop_device(tphone) then
+                return nil, "DesktopRequired"
+            end
+            if not desktop_storage_ok or not desktop_storage then
+                return nil, "DesktopStorageUnavailable"
+            end
+            return desktop_storage.list_drives()
+        end,
+        mounts = function()
+            if not is_desktop_device(tphone) then
+                return nil, "DesktopRequired"
+            end
+            if not desktop_storage_ok or not desktop_storage then
+                return nil, "DesktopStorageUnavailable"
+            end
+            return desktop_storage.mounted()
+        end,
+        format_drive = function(name, label)
+            if not is_desktop_device(tphone) then
+                return false, "DesktopRequired"
+            end
+            if not desktop_storage_ok or not desktop_storage then
+                return false, "DesktopStorageUnavailable"
+            end
+            return desktop_storage.format_drive(name, label)
+        end,
+        install_root = function()
+            if not is_desktop_device(tphone) then
+                return nil, "DesktopRequired"
+            end
+            if not desktop_storage_ok or not desktop_storage then
+                return nil, "DesktopStorageUnavailable"
+            end
+            local root, drive = desktop_storage.default_app_root(tphone)
+            return {
+                root = root,
+                mounted = drive ~= nil,
+                drive = drive and drive.name or nil,
+                mount = drive and drive.mount or nil,
+            }
         end,
     }
 end
@@ -1097,8 +1257,9 @@ local function make_dev_api(tphone)
         prefix = tostring(prefix or "")
         local words = {
             "HCAPI.screen.write", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.wrap",
-            "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.userfs.read", "HCAPI.userfs.write",
-            "HCAPI.desktop.open_popup", "HCAPI.desktop.open_terminal", "HCAPI.desktop.open_file",
+            "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.storage.read", "HCAPI.storage.write",
+            "HCAPI.storage.info", "HCAPI.userfs.read", "HCAPI.userfs.write",
+            "HCAPI.desktop.open_popup", "HCAPI.desktop.open_terminal", "HCAPI.desktop.open_file", "HCAPI.desktop.drives",
             "HCAPI.bank.purchase", "HCAPI.phone.send", "app.render", "app.on_key", "app.on_touch", "app.on_tick",
         }
         local out = {}
@@ -1204,7 +1365,7 @@ local function make_device_api(tphone)
     }
 end
 
-function hcapi.create(tphone, app_id)
+function hcapi.create(tphone, app_id, options)
     if not tphone.hcfs then
         tphone.hcfs = UserFS.new(tphone.identity or {})
     end
@@ -1223,10 +1384,15 @@ function hcapi.create(tphone, app_id)
         printer = make_printer_api(tphone),
         fs = make_fs_api(tphone.hcfs, app_id),
         userfs = make_userfs_api(tphone, tphone.hcfs),
+        storage = make_storage_api(tphone, app_id, options),
         desktop = make_desktop_api(tphone, app_id),
         dev = make_dev_api(tphone),
         device = make_device_api(tphone),
         apps = {
+            refresh = function()
+                tphone.apps_dirty = true
+                return true
+            end,
             install = function(package)
                 if not tphone.install_app then
                     return false, "InstallUnavailable"

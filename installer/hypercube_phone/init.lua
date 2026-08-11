@@ -13,6 +13,7 @@ local rednet_driver = require("Kernal.drivers.rednet")
 local tesseracid = require("Kernal.services.tesseracid")
 local hcapi = require("Kernal.services.hcapi")
 local app_manager = require("Kernal.services.app_manager")
+local desktop_storage_ok, desktop_storage = pcall(require, "Kernal.services.desktop_storage")
 local gui = require("Kernal.gui")
 
 local TPhone = {
@@ -396,6 +397,9 @@ function TPhone:install_app(package)
         logger.warn("app install blocked incompatible device " .. tostring(package and package.id), self.root_context)
         return false, "DeviceNotSupported"
     end
+    if desktop_storage_ok and desktop_storage and desktop_storage.is_desktop(self) and type(package) == "table" and not package.install_root then
+        package.install_root = desktop_storage.default_app_root(self)
+    end
     local ok, result = app_manager.install(package)
     if ok then
         self.apps_dirty = true
@@ -410,6 +414,9 @@ function TPhone:install_dev_app(package)
     if app_manager.device_allowed and not app_manager.device_allowed(package and (package.devices or package.device_types or package.supported_devices), self.device) then
         logger.warn("dev app install blocked incompatible device " .. tostring(package and package.id), self.root_context)
         return false, "DeviceNotSupported"
+    end
+    if desktop_storage_ok and desktop_storage and desktop_storage.is_desktop(self) and type(package) == "table" and not package.install_root then
+        package.install_root = desktop_storage.default_app_root(self)
     end
     local ok, result = app_manager.install_dev(package)
     if ok then

@@ -1,0 +1,9 @@
+{
+  title = "Storage",
+  id = "storage",
+  author = "Tesserac",
+  description = "Format and inspect mounted HyperCube Desktop app drives.",
+  version = "1.0.0",
+  devices = { "TDesktop", "TBusinessDesktop" },
+  refresh_rate = 4,
+}

@@ -32,7 +32,7 @@ appstore/apps/doom/assets/title.nfp
 appstore/apps/doom/levels/e1m1.lua
 ```
 
-User-installed apps are copied to the phone under `user/apps/<app_id>/`. The runtime treats that folder as the app's local code/assets bundle.
+User-installed apps are copied to the phone under `user/apps/<app_id>/`. On desktop devices, if a formatted HyperCube Desktop drive is mounted, new app installs prefer that drive under `hypercube/apps/<app_id>/`. The runtime treats the selected folder as the app's local code/assets bundle.
 
 ## Manifest
 
@@ -347,7 +347,21 @@ Apps store data in their app-scoped HCFS directory through `api.fs`.
 
 Paths are scoped to the app ID. Apps cannot read another app's files through this API.
 
-Use `api.fs` for saves, settings, caches, and user-created data. Do not use it for bundled read-only assets.
+Use `api.fs` for account-bound saves, settings, caches, and user-created data. Do not use it for bundled read-only assets.
+
+## App Storage API
+
+Apps also receive `api.storage`, an app-private physical storage folder. On phones and desktops without a formatted app drive, this is stored under internal `user/appdata/<app_id>/`. On desktops, apps installed to a mounted HyperCube Desktop drive store this data beside the drive's app bundle under `hypercube/appdata/<app_id>/`.
+
+- `api.storage.info()` returns `{ root, mounted, drive, mount }`.
+- `api.storage.read(path)` returns file text or `nil, err`.
+- `api.storage.write(path, data)` writes text, creating parent folders as needed.
+- `api.storage.mkdir(path)` creates a folder.
+- `api.storage.list(path)` lists child names in a folder.
+- `api.storage.exists(path)` returns a boolean.
+- `api.storage.delete(path)` deletes a file or folder.
+
+Use `api.storage` for large local assets, caches, generated files, local indexes, or data that should travel with a mounted desktop app drive. Use `api.fs` when the data should follow the signed-in Tesserac account.
 
 ## App Bundle API
 
@@ -364,7 +378,7 @@ local title_image = api.app.read("assets/title.nfp")
 local levels = api.app.list("levels")
 ```
 
-Bundle paths are relative to `user/apps/<app_id>/` and reject parent-directory traversal. Apps cannot read another app's bundle through this API.
+Bundle paths are relative to the installed app bundle, such as `user/apps/<app_id>/` or a mounted desktop drive's `hypercube/apps/<app_id>/`, and reject parent-directory traversal. Apps cannot read another app's bundle through this API.
 
 Use `api.app` for static assets included with the app package: paintutils images, level data, sprite sheets, map data, and local Lua modules.
 
@@ -556,6 +570,14 @@ Desktop apps can also ask the window manager to adjust their current window:
 - `api.desktop.close()`
 - `api.desktop.set_title(title)`
 - `api.desktop.open_popup(kind, options)`
+- `api.desktop.drives()`
+- `api.desktop.mounts()`
+- `api.desktop.format_drive(name, label)`
+- `api.desktop.install_root()`
+
+`api.desktop.drives()` lists attached disk drives and reports whether each disk is formatted for HyperCube Desktop app storage. `api.desktop.format_drive(name, label)` writes the HyperCube Desktop drive marker and creates `hypercube/apps` plus `hypercube/appdata`. Once formatted, app installs on that desktop target the mounted drive automatically while it is present.
+
+Use `api.apps.refresh()` after mounting or ejecting a desktop app drive to ask the shell to rescan installed apps.
 
 When an app is running inside the desktop window manager, render and event callbacks include `ctx.desktop = true` and `ctx.window = { id, app_id, fullscreen, minimized, width, height }`. Existing phone apps can still run because the normal `ctx.x`, `ctx.y`, `ctx.width`, `ctx.height`, `ctx.buttons`, and `ctx.state` fields are unchanged.
 

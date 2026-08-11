@@ -1,4 +1,5 @@
 local hcapi = require("Kernal.services.hcapi")
+local desktop_storage_ok, desktop_storage = pcall(require, "Kernal.services.desktop_storage")
 
 local app_manager = {}
 
@@ -89,8 +90,9 @@ local function app_order(id)
         banking = 3,
         browser = 4,
         files = 5,
-        word = 6,
-        settings = 7,
+        storage = 6,
+        word = 7,
+        settings = 8,
     }
     return priority[id] or 50
 end
@@ -103,6 +105,21 @@ local function ensure_dir(path)
         fs.makeDir(path)
     end
     return true
+end
+
+local function valid_install_root(root)
+    root = tostring(root or "")
+    if root == USER_APP_ROOT then
+        return true
+    end
+    if desktop_storage_ok and desktop_storage and desktop_storage.app_roots then
+        for _, allowed in ipairs(desktop_storage.app_roots()) do
+            if root == tostring(allowed or "") then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function write_all(path, data)
@@ -291,7 +308,7 @@ local function app_dir_for_path(path)
     return tostring(path or ""):match("^(.*)/app%.lua$") or tostring(path or ""):match("^(.*)/[^/]+$")
 end
 
-local function scan_disk_root(root, apps, seen)
+local function scan_disk_root(root, apps, seen, user_app)
     if not fs or not fs.exists or not fs.list or not fs.exists(root) then
         return
     end
@@ -305,6 +322,7 @@ local function scan_disk_root(root, apps, seen)
                 apps[#apps + 1] = {
                     id = key,
                     path = app_path,
+                    user_app = user_app == true,
                 }
             end
         end
@@ -451,7 +469,12 @@ function app_manager.scan()
         end
     end
 
-    scan_disk_root(USER_APP_ROOT, apps, seen)
+    if desktop_storage_ok and desktop_storage and desktop_storage.app_roots then
+        for _, root in ipairs(desktop_storage.app_roots()) do
+            scan_disk_root(root, apps, seen, true)
+        end
+    end
+    scan_disk_root(USER_APP_ROOT, apps, seen, true)
     scan_disk_root(APP_ROOT, apps, seen)
 
     table.sort(apps, function(a, b)
@@ -466,14 +489,14 @@ function app_manager.scan()
 end
 
 function app_manager.load(tphone, descriptor)
-    local api = hcapi.create(tphone, descriptor.id)
     local app_dir = app_dir_for_path(descriptor.path)
-    if tostring(app_dir or ""):sub(1, #USER_APP_ROOT + 1) == USER_APP_ROOT .. "/" then
+    if descriptor.user_app == true or tostring(app_dir or ""):sub(1, #USER_APP_ROOT + 1) == USER_APP_ROOT .. "/" then
         local verified, verify_err = verify_user_app_integrity(descriptor.id, app_dir)
         if not verified then
             return nil, verify_err
         end
     end
+    local api = hcapi.create(tphone, descriptor.id, { app_dir = app_dir })
     api.app = make_app_file_api(app_dir)
     local env = safe_env(api, app_dir)
     local loader, err = loadfile_with_env(descriptor.path, env)
@@ -643,12 +666,16 @@ function app_manager.install(package)
         return false, integrity_err
     end
 
-    local root_ok, root_err = ensure_dir(USER_APP_ROOT)
+    local install_root = tostring(package.install_root or USER_APP_ROOT)
+    if not valid_install_root(install_root) then
+        return false, "InvalidInstallRoot"
+    end
+    local root_ok, root_err = ensure_dir(install_root)
     if not root_ok then
         return false, root_err
     end
 
-    local app_dir = combine(USER_APP_ROOT, id)
+    local app_dir = combine(install_root, id)
     if fs.exists(app_dir) then
         fs.delete(app_dir)
     end

@@ -576,6 +576,8 @@ local function run_command(state, command)
     elseif command == "help" then
         push(state, "help clear id net reboot ls cat")
         push(state, "lua <expr/code> | run <userfs.lua>")
+        push(state, "drives | mounts | apprefresh")
+        push(state, "formatdrive <drive> [label]")
         push(state, "appnew <id> | applint <file>")
         push(state, "appinstalllocal <dir> [id] | apprun <dir> [id]")
         push(state, "appinstall pastebin <id> [app_id]")
@@ -588,6 +590,52 @@ local function run_command(state, command)
     elseif command == "net" then
         local net = api.hypernet.summary()
         push(state, tostring(net.status or "offline") .. " #" .. tostring(net.server_id or "-"))
+    elseif command == "drives" then
+        local drives, err
+        if api.desktop and api.desktop.drives then
+            drives, err = api.desktop.drives()
+        else
+            err = "DesktopRequired"
+        end
+        if not drives then
+            push(state, tostring(err))
+        else
+            for _, drive in ipairs(drives) do
+                push(state, tostring(drive.name) .. " " .. (drive.formatted and "formatted" or "unformatted") .. " " .. tostring(drive.mount or "-"))
+            end
+        end
+    elseif command == "mounts" then
+        local mounts, err
+        if api.desktop and api.desktop.mounts then
+            mounts, err = api.desktop.mounts()
+        else
+            err = "DesktopRequired"
+        end
+        if not mounts then
+            push(state, tostring(err))
+        elseif #mounts == 0 then
+            push(state, "No formatted drives mounted")
+        else
+            for _, drive in ipairs(mounts) do
+                push(state, tostring(drive.name) .. " apps=" .. tostring(drive.apps_path))
+            end
+        end
+    elseif command == "apprefresh" then
+        if api.apps and api.apps.refresh then
+            api.apps.refresh()
+            push(state, "App rescan requested")
+        else
+            push(state, "RefreshUnavailable")
+        end
+    elseif command:sub(1, 12) == "formatdrive " then
+        local args = split_args(command)
+        local ok, result
+        if api.desktop and api.desktop.format_drive then
+            ok, result = api.desktop.format_drive(args[2], args[3])
+        else
+            ok, result = false, "DesktopRequired"
+        end
+        push(state, ok and ("Formatted " .. tostring(args[2])) or tostring(result))
     elseif command == "reboot" then
         if api.dev and api.dev.eval then
             local ok, result = api.dev.eval("os.reboot()")

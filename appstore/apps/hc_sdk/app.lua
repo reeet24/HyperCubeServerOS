@@ -10,14 +10,18 @@ local app = {
     },
 }
 
-local DOCS = {
-    "Offline SDK summary:",
-    "App files live in /dev/apps/<id>.",
-    "Every app needs app.lua returning an app table.",
-    "Use HCAPI.screen, HCAPI.fs, HCAPI.userfs, HCAPI.desktop, and HCAPI.printer.",
-    "Terminal commands: appnew, applint, appinstalllocal, apprun.",
+local DOC_IDS = { "desktop-sdk", "userapp-api", "banking-api", "web-api", "user-server-api" }
+local TABS = { "project", "edit", "manifest", "files", "lint", "docs", "api", "build", "term" }
+local API_WORDS = {
+    "HCAPI.screen.write", "HCAPI.screen.write_wrap", "HCAPI.screen.button", "HCAPI.screen.rect", "HCAPI.screen.wrap",
+    "HCAPI.fs.read", "HCAPI.fs.write", "HCAPI.fs.list", "HCAPI.fs.delete",
+    "HCAPI.userfs.read", "HCAPI.userfs.write", "HCAPI.userfs.mkdir", "HCAPI.userfs.list", "HCAPI.userfs.delete",
+    "HCAPI.desktop.open_app", "HCAPI.desktop.open_popup", "HCAPI.desktop.open_terminal", "HCAPI.desktop.set_title",
+    "HCAPI.bank.status", "HCAPI.bank.purchase", "HCAPI.bank.transfer",
+    "HCAPI.phone.status", "HCAPI.phone.send", "HCAPI.phone.inbox",
+    "HCAPI.printer.status", "HCAPI.printer.print",
+    "app.render", "app.on_touch", "app.on_key", "app.on_tick", "app.on_resume", "app.on_pause", "app.on_close",
 }
-local DOC_IDS = { "desktop-sdk", "userapp-api", "banking-api" }
 
 local TEMPLATE = [[local api = HCAPI
 local C = api.colors
@@ -36,6 +40,14 @@ function app.render(ctx)
     api.screen.write(ctx.x + 1, ctx.y + 1, "Hello HyperCube", C.yellow, C.black)
 end
 
+function app.on_touch(ctx)
+    return false
+end
+
+function app.on_key(ctx)
+    return false
+end
+
 return app
 ]]
 
@@ -48,82 +60,300 @@ local function safe_id(id)
     return id
 end
 
+local function safe_path(path)
+    path = tostring(path or ""):gsub("\\", "/")
+    path = path:gsub("^%./", ""):gsub("//+", "/")
+    if path == "" or path:find("..", 1, true) then
+        return nil
+    end
+    if path:sub(1, 1) ~= "/" then
+        path = "/" .. path
+    end
+    return path
+end
+
+local function rel_path(path)
+    path = tostring(path or ""):gsub("\\", "/"):gsub("^/+", ""):gsub("^%./", ""):gsub("//+", "/")
+    if path == "" or path:find("..", 1, true) or path:sub(-1) == "/" then
+        return nil
+    end
+    return path
+end
+
 local function root_for(id)
     return "/dev/apps/" .. safe_id(id)
 end
 
-local function read_file(path)
-    return api.userfs.read(path)
-end
-
 local function write_file(path, data)
-    local parts = {}
-    for part in tostring(path or ""):gmatch("[^/]+") do
-        parts[#parts + 1] = part
+    path = safe_path(path)
+    if not path then
+        return false, "InvalidPath"
     end
     local current = ""
+    local parts = {}
+    for part in path:gmatch("[^/]+") do
+        parts[#parts + 1] = part
+    end
     for i = 1, #parts - 1 do
         current = current .. "/" .. parts[i]
         api.userfs.mkdir(current)
     end
-    return api.userfs.write(path, data)
+    return api.userfs.write(path, tostring(data or ""))
 end
 
-local function load_project(state)
-    state.app_id = safe_id(state.app_id or "my_app")
-    state.root = root_for(state.app_id)
-    state.path = state.root .. "/app.lua"
-    local source = read_file(state.path)
-    if not source then
-        api.userfs.mkdir("/dev")
-        api.userfs.mkdir("/dev/apps")
-        api.userfs.mkdir(state.root)
-        write_file(state.root .. "/manifest", textutils.serialize({
-            id = state.app_id,
-            title = state.app_id,
-            label = state.app_id:sub(1, 4),
-            version = "0.1.0",
-            devices = { "TDesktop", "TBusinessDesktop" },
-        }))
-        write_file(state.path, TEMPLATE)
-        source = TEMPLATE
+local function read_file(path)
+    path = safe_path(path)
+    if not path then
+        return nil, "InvalidPath"
     end
-    state.source = source or ""
-    state.cursor = #(state.source or "")
+    return api.userfs.read(path)
 end
 
-local function lint(state)
-    state.diagnostics = {}
-    if api.dev and api.dev.lint then
-        local ok, result = api.dev.lint(state.source or "")
-        state.diagnostics = ok and result or { { severity = "error", message = tostring(result) } }
+local function list_dir(path)
+    path = safe_path(path or "/")
+    if not path then
+        return nil, "InvalidPath"
     end
+    return api.userfs.list(path)
 end
 
-local function install_package(state, run_after)
-    write_file(state.path, state.source or "")
-    lint(state)
-    local package = {
-        id = state.app_id,
-        title = state.app_id,
-        version = "dev",
-        files = {
-            { path = "app.lua", data = state.source or "" },
-        },
+local function ensure_project_dirs(root)
+    api.userfs.mkdir("/dev")
+    api.userfs.mkdir("/dev/apps")
+    api.userfs.mkdir(root)
+    api.userfs.mkdir(root .. "/lib")
+    api.userfs.mkdir(root .. "/assets")
+end
+
+local function serialize_manifest(manifest)
+    return textutils.serialize({
+        id = manifest.id,
+        title = manifest.title,
+        label = manifest.label,
+        version = manifest.version,
+        author = manifest.author,
+        description = manifest.description,
+        devices = manifest.devices,
+        refresh_rate = manifest.refresh_rate,
+        render_mode = manifest.render_mode,
+        mutable_paths = manifest.mutable_paths,
+    })
+end
+
+local function default_manifest(id)
+    return {
+        id = safe_id(id),
+        title = safe_id(id),
+        label = safe_id(id):sub(1, 4),
+        version = "0.1.0",
+        author = api.identity and api.identity.username or "Developer",
+        description = "HyperCube desktop app.",
         devices = { "TDesktop", "TBusinessDesktop" },
+        refresh_rate = 10,
+        mutable_paths = { "assets" },
     }
-    local ok, result = api.apps.install_dev(package)
+end
+
+local function load_manifest(root, id)
+    local data = read_file(root .. "/manifest")
+    local ok, manifest = pcall(textutils.unserialize, data or "")
+    if not ok or type(manifest) ~= "table" then
+        manifest = default_manifest(id)
+    end
+    manifest.id = safe_id(manifest.id or id)
+    manifest.title = tostring(manifest.title or manifest.id)
+    manifest.label = tostring(manifest.label or manifest.id:sub(1, 4))
+    manifest.version = tostring(manifest.version or "0.1.0")
+    manifest.devices = type(manifest.devices) == "table" and manifest.devices or { "TDesktop", "TBusinessDesktop" }
+    manifest.refresh_rate = tonumber(manifest.refresh_rate) or 10
+    return manifest
+end
+
+local function project_files(root, dir, out)
+    out = out or {}
+    dir = dir or ""
+    local full = dir == "" and root or (root .. "/" .. dir)
+    local listing = list_dir(full)
+    if type(listing) == "table" then
+        for _, child in ipairs(listing) do
+            local child_rel = dir == "" and child or (dir .. "/" .. child)
+            project_files(root, child_rel, out)
+        end
+    else
+        local path = rel_path(dir)
+        if path then
+            out[#out + 1] = path
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+local function load_projects(state)
+    state.projects = {}
+    local roots = list_dir("/dev/apps")
+    if type(roots) == "table" then
+        for _, id in ipairs(roots) do
+            state.projects[#state.projects + 1] = safe_id(id)
+        end
+    end
+    table.sort(state.projects)
+end
+
+local function load_current_file(state)
+    state.files = project_files(state.root)
+    if #state.files == 0 then
+        state.files = { "app.lua" }
+    end
+    state.file_index = math.max(1, math.min(tonumber(state.file_index or 1) or 1, #state.files))
+    state.file = state.files[state.file_index]
+    state.source = read_file(state.root .. "/" .. state.file) or ""
+    state.cursor = #(state.source or "")
+    state.edit_scroll = 0
+end
+
+local function create_project(state, id)
+    id = safe_id(id or state.new_id or "my_app")
+    local root = root_for(id)
+    ensure_project_dirs(root)
+    local manifest = default_manifest(id)
+    write_file(root .. "/manifest", serialize_manifest(manifest))
+    write_file(root .. "/app.lua", TEMPLATE:gsub("New App", manifest.title):gsub("App\",", manifest.label .. "\","))
+    write_file(root .. "/lib/readme.lua", "return { name = \"" .. id .. "\" }\n")
+    state.app_id = id
+    state.root = root
+    state.manifest = manifest
+    state.status = "Created " .. root
+    load_projects(state)
+    load_current_file(state)
+end
+
+local function load_project(state, id)
+    id = safe_id(id or state.app_id or "my_app")
+    state.app_id = id
+    state.root = root_for(id)
+    if not api.userfs.exists(state.root .. "/app.lua") then
+        create_project(state, id)
+        return
+    end
+    state.manifest = load_manifest(state.root, id)
+    load_current_file(state)
+    state.status = "Loaded " .. id
+end
+
+local function save_current_file(state)
+    local ok, err = write_file(state.root .. "/" .. state.file, state.source or "")
+    state.status = ok and ("Saved " .. state.file) or tostring(err)
+    return ok
+end
+
+local function save_manifest(state)
+    state.manifest = state.manifest or default_manifest(state.app_id)
+    state.manifest.id = state.app_id
+    local ok, err = write_file(state.root .. "/manifest", serialize_manifest(state.manifest))
+    state.status = ok and "Saved manifest" or tostring(err)
+    return ok
+end
+
+local function make_package(state)
+    save_current_file(state)
+    save_manifest(state)
+    local files = {}
+    for _, file in ipairs(project_files(state.root)) do
+        if file ~= "manifest" then
+            files[#files + 1] = {
+                path = file,
+                data = read_file(state.root .. "/" .. file) or "",
+            }
+        end
+    end
+    return {
+        id = state.app_id,
+        title = state.manifest and state.manifest.title or state.app_id,
+        label = state.manifest and state.manifest.label or state.app_id:sub(1, 4),
+        version = state.manifest and state.manifest.version or "dev",
+        author = state.manifest and state.manifest.author,
+        description = state.manifest and state.manifest.description,
+        devices = state.manifest and state.manifest.devices,
+        refresh_rate = state.manifest and state.manifest.refresh_rate,
+        render_mode = state.manifest and state.manifest.render_mode,
+        mutable_paths = state.manifest and state.manifest.mutable_paths,
+        files = files,
+    }
+end
+
+local function lint_source(name, source, diagnostics)
+    diagnostics = diagnostics or {}
+    if name:match("%.lua$") and api.dev and api.dev.lint then
+        local ok, result = api.dev.lint(source or "")
+        if ok then
+            for _, item in ipairs(result or {}) do
+                diagnostics[#diagnostics + 1] = {
+                    file = name,
+                    severity = item.severity or "info",
+                    message = item.message or "",
+                }
+            end
+        else
+            diagnostics[#diagnostics + 1] = { file = name, severity = "error", message = tostring(result) }
+        end
+    end
+    if name == "app.lua" and not tostring(source or ""):find("return%s+app") then
+        diagnostics[#diagnostics + 1] = { file = name, severity = "hint", message = "Entry should return app." }
+    end
+    return diagnostics
+end
+
+local function lint_project(state)
+    save_current_file(state)
+    local diagnostics = {}
+    for _, file in ipairs(project_files(state.root)) do
+        if file ~= "manifest" then
+            lint_source(file, read_file(state.root .. "/" .. file), diagnostics)
+        end
+    end
+    state.diagnostics = diagnostics
+    state.status = #diagnostics == 0 and "Lint passed" or ("Diagnostics: " .. tostring(#diagnostics))
+    return diagnostics
+end
+
+local function install_project(state, run_after)
+    local diagnostics = lint_project(state)
+    local blocking = false
+    for _, item in ipairs(diagnostics) do
+        if item.severity == "error" then
+            blocking = true
+            break
+        end
+    end
+    if blocking then
+        state.status = "Fix lint errors before install"
+        return false
+    end
+    local ok, result = api.apps.install_dev(make_package(state))
     state.status = ok and ("Installed " .. tostring(result.id)) or tostring(result)
     if ok and run_after and api.desktop and api.desktop.open_app then
-        api.desktop.open_app(package.id)
+        api.desktop.open_app(state.app_id)
     end
+    return ok
 end
 
-local function completions(state)
+local function completions(prefix)
+    local out = {}
     if api.dev and api.dev.completions then
-        return api.dev.completions(state.complete_prefix or "HCAPI.")
+        out = api.dev.completions(prefix or "")
     end
-    return {}
+    local seen = {}
+    for _, word in ipairs(out) do
+        seen[word] = true
+    end
+    for _, word in ipairs(API_WORDS) do
+        if not seen[word] and (not prefix or prefix == "" or word:sub(1, #prefix) == prefix) then
+            out[#out + 1] = word
+        end
+    end
+    table.sort(out)
+    return out
 end
 
 local function unescape(text)
@@ -137,44 +367,145 @@ end
 
 local function hctml_to_lines(hctml)
     local lines = {}
-    for tag, body in tostring(hctml or ""):gmatch("<([ph]%d?)%f[^>]*>(.-)</%1>") do
+    for body in tostring(hctml or ""):gmatch("<h%d[^>]*>(.-)</h%d>") do
+        lines[#lines + 1] = unescape(body:gsub("<[^>]+>", ""))
+    end
+    for body in tostring(hctml or ""):gmatch("<p[^>]*>(.-)</p>") do
         local line = unescape(body:gsub("<[^>]+>", ""))
         if line:match("%S") then
             lines[#lines + 1] = line
         end
     end
-    if #lines == 0 then
-        for body in tostring(hctml or ""):gmatch("<p>(.-)</p>") do
-            lines[#lines + 1] = unescape(body:gsub("<[^>]+>", ""))
-        end
-    end
     return lines
 end
 
-local function load_server_doc(state, doc_id)
-    state.docs_cache = state.docs_cache or {}
-    doc_id = tostring(doc_id or "desktop-sdk")
-    if state.docs_cache[doc_id] then
-        return state.docs_cache[doc_id]
-    end
+local function fetch_doc(state, path)
     if not api.hypernet or not api.hypernet.request then
         return nil, "HyperNetUnavailable"
     end
     local reply, err = api.hypernet.request({
         type = "web.get",
         domain = "docs.tesserac",
-        path = "/raw/" .. doc_id,
+        path = path,
     }, "web.get.result", 6)
     if not reply or not reply.ok then
         return nil, (reply and reply.error) or err or "DocsUnavailable"
     end
     local page = reply.result or {}
-    local lines = hctml_to_lines(page.hctml or page.body or "")
-    if #lines == 0 then
-        return nil, "DocsEmpty"
+    return hctml_to_lines(page.hctml or page.body or "")
+end
+
+local function load_server_doc(state)
+    state.docs_cache = state.docs_cache or {}
+    local key = tostring(state.doc_id or "desktop-sdk") .. ":" .. tostring(state.doc_query or "")
+    if state.docs_cache[key] then
+        return state.docs_cache[key]
     end
-    state.docs_cache[doc_id] = lines
-    return lines
+    local path
+    if tostring(state.doc_query or "") ~= "" then
+        path = "/search/" .. tostring(state.doc_query):gsub("%s+", "%%20")
+    else
+        path = "/raw/" .. tostring(state.doc_id or "desktop-sdk")
+    end
+    local lines, err = fetch_doc(state, path)
+    if lines and #lines > 0 then
+        state.docs_cache[key] = lines
+        return lines
+    end
+    return {
+        "Docs offline: " .. tostring(err or "DocsEmpty"),
+        "Use Terminal: appnew, applint, appinstalllocal, apprun.",
+        "Use HCAPI.screen, HCAPI.fs, HCAPI.userfs, HCAPI.desktop.",
+    }
+end
+
+local function push_term(state, line)
+    state.term_lines = state.term_lines or {}
+    state.term_lines[#state.term_lines + 1] = tostring(line or "")
+    while #state.term_lines > 120 do
+        table.remove(state.term_lines, 1)
+    end
+end
+
+local function command_words(command)
+    local out = {}
+    for word in tostring(command or ""):gmatch("%S+") do
+        out[#out + 1] = word
+    end
+    return out
+end
+
+local function run_sdk_command(state, command)
+    local args = command_words(command)
+    local cmd = tostring(args[1] or "")
+    if cmd == "" then
+        return
+    elseif cmd == "help" then
+        push_term(state, "new <id> load <id> file <path> save lint install run")
+        push_term(state, "set title|label|version|desc <value>")
+        push_term(state, "doc <id> search <query> lua <code>")
+    elseif cmd == "new" then
+        create_project(state, args[2] or "my_app")
+        push_term(state, state.status)
+    elseif cmd == "load" then
+        load_project(state, args[2] or state.app_id)
+        push_term(state, state.status)
+    elseif cmd == "file" then
+        local file = rel_path(args[2] or "app.lua")
+        if file then
+            write_file(state.root .. "/" .. file, read_file(state.root .. "/" .. file) or "")
+            state.files = project_files(state.root)
+            for i, candidate in ipairs(state.files) do
+                if candidate == file then
+                    state.file_index = i
+                    break
+                end
+            end
+            load_current_file(state)
+            push_term(state, "Editing " .. file)
+        end
+    elseif cmd == "save" then
+        save_current_file(state)
+        save_manifest(state)
+        push_term(state, state.status)
+    elseif cmd == "lint" then
+        local d = lint_project(state)
+        push_term(state, #d == 0 and "lint ok" or ("diagnostics " .. #d))
+    elseif cmd == "install" then
+        install_project(state, false)
+        push_term(state, state.status)
+    elseif cmd == "run" then
+        install_project(state, true)
+        push_term(state, state.status)
+    elseif cmd == "set" then
+        local field = args[2]
+        local value = command:match("^%S+%s+%S+%s+(.+)$") or ""
+        state.manifest = state.manifest or default_manifest(state.app_id)
+        if field == "title" or field == "label" or field == "version" or field == "author" then
+            state.manifest[field] = value
+        elseif field == "desc" or field == "description" then
+            state.manifest.description = value
+        elseif field == "fps" or field == "refresh_rate" then
+            state.manifest.refresh_rate = tonumber(value) or state.manifest.refresh_rate
+        end
+        save_manifest(state)
+        push_term(state, "Set " .. tostring(field))
+    elseif cmd == "doc" then
+        state.doc_id = args[2] or "desktop-sdk"
+        state.doc_query = ""
+        state.tab = "docs"
+        push_term(state, "Doc " .. state.doc_id)
+    elseif cmd == "search" then
+        state.doc_query = command:match("^%S+%s+(.+)$") or ""
+        state.tab = "docs"
+        push_term(state, "Search " .. state.doc_query)
+    elseif cmd == "lua" and api.dev and api.dev.sandbox_run then
+        local code = command:match("^%S+%s+(.+)$") or ""
+        local ok, result = api.dev.sandbox_run(code, { app_id = state.app_id, root = state.root })
+        push_term(state, (ok and "" or "! ") .. tostring(result))
+    else
+        push_term(state, "Unknown command")
+    end
 end
 
 local function init(state)
@@ -182,133 +513,231 @@ local function init(state)
         return
     end
     state.ready = true
+    state.tab = "project"
     state.app_id = "my_app"
-    state.tab = "edit"
-    state.status = "Ready"
+    state.new_id = "my_app"
     state.doc_id = "desktop-sdk"
-    load_project(state)
-    lint(state)
+    state.doc_query = ""
+    state.term_input = ""
+    state.term_lines = { "HyperCube SDK terminal", "Type help" }
+    load_projects(state)
+    load_project(state, state.projects[1] or state.app_id)
 end
 
-local function push_term(state, line)
-    state.term_lines = state.term_lines or {}
-    state.term_lines[#state.term_lines + 1] = tostring(line or "")
-    while #state.term_lines > 80 do
-        table.remove(state.term_lines, 1)
+local function truncate(text, width)
+    text = tostring(text or "")
+    width = math.max(1, tonumber(width) or 1)
+    if #text > width then
+        return text:sub(1, math.max(1, width - 1)) .. "~"
     end
-end
-
-local function run_term_command(state, command)
-    command = tostring(command or "")
-    push_term(state, "> " .. command)
-    if command == "" then
-        return
-    elseif command == "help" then
-        push_term(state, "lua <code> | lint | run")
-    elseif command == "lint" then
-        lint(state)
-        if #(state.diagnostics or {}) == 0 then
-            push_term(state, "lint ok")
-        else
-            for _, item in ipairs(state.diagnostics) do
-                push_term(state, tostring(item.severity) .. ": " .. tostring(item.message))
-            end
-        end
-    elseif command == "run" then
-        install_package(state, true)
-        push_term(state, tostring(state.status))
-    elseif command:sub(1, 4) == "lua " and api.dev and api.dev.sandbox_run then
-        local ok, result = api.dev.sandbox_run(command:sub(5), { app_id = state.app_id })
-        push_term(state, (ok and "" or "! ") .. tostring(result))
-    else
-        push_term(state, "UnknownCommand")
-    end
-end
-
-local function render_terminal(ctx, state)
-    state.term_input = state.term_input or ""
-    if not state.term_lines then
-        state.term_lines = { "SDK terminal", "Type help" }
-    end
-    api.screen.rect(ctx.x, ctx.y, ctx.width, ctx.height, C.black)
-    local visible = math.max(1, ctx.height - 1)
-    local first = math.max(1, #state.term_lines - visible + 1)
-    local row = 0
-    for i = first, #state.term_lines do
-        api.screen.write(ctx.x, ctx.y + row, tostring(state.term_lines[i]):sub(1, ctx.width), C.lightGray, C.black)
-        row = row + 1
-        if row >= visible then
-            break
-        end
-    end
-    api.screen.write(ctx.x, ctx.y + ctx.height - 1, ("> " .. state.term_input):sub(1, ctx.width), C.white, C.black)
+    return text
 end
 
 local function draw_tabs(ctx, state)
-    local tabs = { "edit", "lint", "docs", "complete" }
     local x = ctx.x
-    for _, tab in ipairs(tabs) do
-        ctx.buttons["tab_" .. tab] = api.screen.button("tab_" .. tab, x, ctx.y, #tab + 2, tab, {
+    for _, tab in ipairs(TABS) do
+        local w = math.min(#tab + 2, 10)
+        if x + w > ctx.x + ctx.width then
+            break
+        end
+        ctx.buttons["tab_" .. tab] = api.screen.button("tab_" .. tab, x, ctx.y, w, truncate(tab, w), {
             fg = state.tab == tab and C.black or C.white,
             bg = state.tab == tab and C.yellow or C.gray,
         })
-        x = x + #tab + 3
+        x = x + w + 1
     end
+end
+
+local function draw_toolbar(ctx, state, y)
+    ctx.buttons.save = api.screen.button("save", ctx.x, y, 5, "Save", { fg = C.white, bg = C.blue })
+    ctx.buttons.lint = api.screen.button("lint", ctx.x + 6, y, 5, "Lint", { fg = C.white, bg = C.gray })
+    ctx.buttons.install = api.screen.button("install", ctx.x + 12, y, 7, "Install", { fg = C.white, bg = C.green })
+    ctx.buttons.run = api.screen.button("run", ctx.x + 20, y, 4, "Run", { fg = C.black, bg = C.yellow })
+    ctx.buttons.term = api.screen.button("term", ctx.x + 25, y, 5, "Term", { fg = C.white, bg = C.purple })
+    api.screen.write(ctx.x + 31, y, truncate(state.status or "", math.max(1, ctx.width - 31)), C.lightGray, C.black)
+end
+
+local function draw_project(ctx, state, y)
+    api.screen.write(ctx.x, y, "Projects in /dev/apps", C.cyan, C.black)
+    ctx.buttons.new_project = api.screen.button("new_project", ctx.x, y + 1, 6, "New", { fg = C.white, bg = C.green })
+    ctx.buttons.prev_project = api.screen.button("prev_project", ctx.x + 7, y + 1, 3, "<", { fg = C.white, bg = C.blue })
+    ctx.buttons.next_project = api.screen.button("next_project", ctx.x + 11, y + 1, 3, ">", { fg = C.white, bg = C.blue })
+    api.screen.write(ctx.x + 15, y + 1, "new id: " .. tostring(state.new_id or ""), C.white, C.black)
+    local row = y + 3
+    for i, id in ipairs(state.projects or {}) do
+        if row >= ctx.y + ctx.height - 1 then break end
+        local marker = id == state.app_id and "> " or "  "
+        api.screen.write(ctx.x, row, marker .. id, id == state.app_id and C.yellow or C.lightGray, C.black)
+        row = row + 1
+    end
+end
+
+local function draw_editor(ctx, state, y)
+    api.screen.write(ctx.x, y, "Editing " .. tostring(state.file), C.cyan, C.black)
+    ctx.buttons.prev_file = api.screen.button("prev_file", ctx.x, y + 1, 3, "<", { fg = C.white, bg = C.blue })
+    ctx.buttons.next_file = api.screen.button("next_file", ctx.x + 4, y + 1, 3, ">", { fg = C.white, bg = C.blue })
+    ctx.buttons.new_file = api.screen.button("new_file", ctx.x + 8, y + 1, 8, "NewFile", { fg = C.white, bg = C.green })
+    ctx.buttons.complete_insert = api.screen.button("complete_insert", ctx.x + 17, y + 1, 8, "Insert", { fg = C.black, bg = C.yellow })
+    local lines = api.screen.wrap(state.source or "", math.max(1, ctx.width - 1))
+    local max_rows = math.max(1, ctx.height - 6)
+    local first = math.max(1, (state.edit_scroll or 0) + 1)
+    for i = 1, math.min(max_rows, #lines - first + 1) do
+        api.screen.write(ctx.x, y + 2 + i, truncate(lines[first + i - 1], ctx.width), C.lightGray, C.black)
+    end
+end
+
+local function draw_manifest(ctx, state, y)
+    local m = state.manifest or {}
+    local rows = {
+        "id: " .. tostring(state.app_id),
+        "title: " .. tostring(m.title),
+        "label: " .. tostring(m.label),
+        "version: " .. tostring(m.version),
+        "author: " .. tostring(m.author),
+        "description: " .. tostring(m.description),
+        "refresh_rate: " .. tostring(m.refresh_rate),
+        "devices: " .. table.concat(m.devices or {}, ", "),
+    }
+    api.screen.write(ctx.x, y, "Manifest - edit with terminal: set title <value>", C.cyan, C.black)
+    for i, row in ipairs(rows) do
+        if y + i >= ctx.y + ctx.height then break end
+        api.screen.write(ctx.x, y + i, truncate(row, ctx.width), C.lightGray, C.black)
+    end
+end
+
+local function draw_files(ctx, state, y)
+    api.screen.write(ctx.x, y, "Project files", C.cyan, C.black)
+    ctx.buttons.prev_file = api.screen.button("prev_file", ctx.x, y + 1, 3, "<", { fg = C.white, bg = C.blue })
+    ctx.buttons.next_file = api.screen.button("next_file", ctx.x + 4, y + 1, 3, ">", { fg = C.white, bg = C.blue })
+    ctx.buttons.delete_file = api.screen.button("delete_file", ctx.x + 8, y + 1, 7, "Delete", { fg = C.white, bg = C.red })
+    local row = y + 3
+    for i, file in ipairs(state.files or {}) do
+        if row >= ctx.y + ctx.height - 1 then break end
+        local marker = i == state.file_index and "> " or "  "
+        api.screen.write(ctx.x, row, marker .. file, i == state.file_index and C.yellow or C.lightGray, C.black)
+        row = row + 1
+    end
+end
+
+local function draw_lint(ctx, state, y)
+    lint_project(state)
+    api.screen.write(ctx.x, y, "Diagnostics", C.cyan, C.black)
+    if #(state.diagnostics or {}) == 0 then
+        api.screen.write(ctx.x, y + 1, "No diagnostics.", C.green, C.black)
+        return
+    end
+    for i, item in ipairs(state.diagnostics) do
+        if i > ctx.height - 4 then break end
+        local text = tostring(item.file) .. " " .. tostring(item.severity) .. ": " .. tostring(item.message)
+        api.screen.write(ctx.x, y + i, truncate(text, ctx.width), item.severity == "error" and C.red or C.orange, C.black)
+    end
+end
+
+local function draw_docs(ctx, state, y)
+    ctx.buttons.doc_prev = api.screen.button("doc_prev", ctx.x, y, 3, "<", { fg = C.white, bg = C.blue })
+    ctx.buttons.doc_next = api.screen.button("doc_next", ctx.x + 4, y, 3, ">", { fg = C.white, bg = C.blue })
+    ctx.buttons.doc_search = api.screen.button("doc_search", ctx.x + 8, y, 7, "Search", { fg = C.white, bg = C.green })
+    api.screen.write(ctx.x + 16, y, truncate((state.doc_query ~= "" and ("search: " .. state.doc_query) or ("doc: " .. state.doc_id)), ctx.width - 16), C.cyan, C.black)
+    local lines = load_server_doc(state)
+    for i = 1, math.min(#lines, ctx.height - 4) do
+        api.screen.write(ctx.x, y + i + 1, truncate(lines[i], ctx.width), C.lightGray, C.black)
+    end
+end
+
+local function draw_api(ctx, state, y)
+    local prefix = state.complete_prefix or "HCAPI."
+    api.screen.write(ctx.x, y, "Completions for " .. prefix, C.cyan, C.black)
+    ctx.buttons.complete_prefix = api.screen.button("complete_prefix", ctx.x, y + 1, 7, "Prefix", { fg = C.white, bg = C.blue })
+    local list = completions(prefix)
+    state.current_completions = list
+    for i = 1, math.min(#list, ctx.height - 4) do
+        api.screen.write(ctx.x, y + i + 1, truncate(list[i], ctx.width), C.yellow, C.black)
+    end
+end
+
+local function draw_build(ctx, state, y)
+    local package = make_package(state)
+    api.screen.write(ctx.x, y, "Build package", C.cyan, C.black)
+    local rows = {
+        "id: " .. tostring(package.id),
+        "version: " .. tostring(package.version),
+        "files: " .. tostring(#(package.files or {})),
+        "devices: " .. table.concat(package.devices or {}, ", "),
+        "mutable: " .. table.concat(package.mutable_paths or {}, ", "),
+    }
+    for i, row in ipairs(rows) do
+        api.screen.write(ctx.x, y + i, truncate(row, ctx.width), C.lightGray, C.black)
+    end
+end
+
+local function draw_term(ctx, state, y, height, width)
+    api.screen.write(ctx.x, y, "SDK terminal", C.cyan, C.black)
+    local visible = math.max(1, height - 3)
+    local first = math.max(1, #(state.term_lines or {}) - visible + 1)
+    local row = y + 1
+    for i = first, #(state.term_lines or {}) do
+        api.screen.write(ctx.x, row, truncate(state.term_lines[i], width), C.lightGray, C.black)
+        row = row + 1
+        if row >= y + visible then break end
+    end
+    api.screen.write(ctx.x, y + height - 1, truncate("> " .. tostring(state.term_input or ""), width), C.white, C.black)
 end
 
 function app.render(ctx)
     local state = ctx.state
     init(state)
     if ctx.window and ctx.window.popup_kind == "terminal" then
-        render_terminal(ctx, state)
+        api.screen.rect(ctx.x, ctx.y, ctx.width, ctx.height, C.black)
+        draw_term(ctx, state, ctx.y, ctx.height, ctx.width)
         return
     end
     api.screen.rect(ctx.x, ctx.y, ctx.width, ctx.height, C.black)
     draw_tabs(ctx, state)
-    local top = ctx.y + 2
-    api.screen.write(ctx.x, top, "Project: " .. tostring(state.app_id), C.cyan, C.black)
-    ctx.buttons.save = api.screen.button("save", ctx.x, top + 1, 6, "Save", { fg = C.white, bg = C.blue })
-    ctx.buttons.install = api.screen.button("install", ctx.x + 7, top + 1, 9, "Install", { fg = C.white, bg = C.green })
-    ctx.buttons.run = api.screen.button("run", ctx.x + 17, top + 1, 5, "Run", { fg = C.black, bg = C.yellow })
-    ctx.buttons.term = api.screen.button("term", ctx.x + 23, top + 1, 6, "Term", { fg = C.white, bg = C.purple })
-    top = top + 3
-
-    if state.tab == "edit" then
-        local lines = api.screen.wrap(state.source or "", math.max(1, ctx.width - 1))
-        for i = 1, math.min(#lines, ctx.height - 5) do
-            api.screen.write(ctx.x, top + i - 1, lines[i], C.lightGray, C.black)
-        end
+    local y = ctx.y + 2
+    draw_toolbar(ctx, state, y)
+    y = y + 2
+    if state.tab == "project" then
+        draw_project(ctx, state, y)
+    elseif state.tab == "edit" then
+        draw_editor(ctx, state, y)
+    elseif state.tab == "manifest" then
+        draw_manifest(ctx, state, y)
+    elseif state.tab == "files" then
+        draw_files(ctx, state, y)
     elseif state.tab == "lint" then
-        lint(state)
-        if #(state.diagnostics or {}) == 0 then
-            api.screen.write(ctx.x, top, "No diagnostics.", C.green, C.black)
-        else
-            for i, item in ipairs(state.diagnostics) do
-                if i > ctx.height - 5 then break end
-                api.screen.write(ctx.x, top + i - 1, tostring(item.severity) .. ": " .. tostring(item.message), C.orange, C.black)
-            end
-        end
-    elseif state.tab == "complete" then
-        local list = completions(state)
-        for i = 1, math.min(#list, ctx.height - 5) do
-            api.screen.write(ctx.x, top + i - 1, list[i], C.yellow, C.black)
-        end
+        draw_lint(ctx, state, y)
+    elseif state.tab == "docs" then
+        draw_docs(ctx, state, y)
+    elseif state.tab == "api" then
+        draw_api(ctx, state, y)
+    elseif state.tab == "build" then
+        draw_build(ctx, state, y)
     else
-        ctx.buttons.doc_prev = api.screen.button("doc_prev", ctx.x, top, 3, "<", { fg = C.white, bg = C.blue })
-        ctx.buttons.doc_next = api.screen.button("doc_next", ctx.x + 4, top, 3, ">", { fg = C.white, bg = C.blue })
-        api.screen.write(ctx.x + 8, top, "docs.tesserac/raw/" .. tostring(state.doc_id or "desktop-sdk"), C.cyan, C.black)
-        top = top + 2
-        local lines, err = load_server_doc(state, state.doc_id)
-        lines = lines or DOCS
-        if err then
-            api.screen.write(ctx.x, top, "Docs offline: " .. tostring(err), C.orange, C.black)
-            top = top + 1
-        end
-        for i = 1, math.min(#lines, ctx.height - 6) do
-            api.screen.write(ctx.x, top + i - 1, tostring(lines[i]):sub(1, ctx.width), C.lightGray, C.black)
-        end
+        draw_term(ctx, state, y, ctx.height - 4, ctx.width)
     end
-    api.screen.write(ctx.x, ctx.y + ctx.height - 1, tostring(state.status or ""), C.white, C.black)
+end
+
+local function cycle_project(state, delta)
+    if #(state.projects or {}) == 0 then
+        load_projects(state)
+    end
+    if #(state.projects or {}) == 0 then return end
+    local index = 1
+    for i, id in ipairs(state.projects) do
+        if id == state.app_id then index = i break end
+    end
+    index = index + delta
+    if index < 1 then index = #state.projects end
+    if index > #state.projects then index = 1 end
+    load_project(state, state.projects[index])
+end
+
+local function cycle_file(state, delta)
+    save_current_file(state)
+    state.file_index = (state.file_index or 1) + delta
+    if state.file_index < 1 then state.file_index = #(state.files or { "app.lua" }) end
+    if state.file_index > #(state.files or {}) then state.file_index = 1 end
+    load_current_file(state)
 end
 
 function app.on_touch(ctx)
@@ -318,47 +747,78 @@ function app.on_touch(ctx)
     local tab = id:match("^tab_(.+)$")
     if tab then
         state.tab = tab
-        return true
     elseif id == "save" then
-        local ok, err = write_file(state.path, state.source or "")
-        state.status = ok and "Saved " .. state.path or tostring(err)
-        return true
+        save_current_file(state)
+        save_manifest(state)
+    elseif id == "lint" then
+        state.tab = "lint"
+        lint_project(state)
     elseif id == "install" then
-        install_package(state, false)
-        return true
+        install_project(state, false)
     elseif id == "run" then
-        install_package(state, true)
-        return true
+        install_project(state, true)
     elseif id == "term" then
         if api.desktop and api.desktop.open_terminal then
-            local ok, err = api.desktop.open_terminal({ cwd = state.root, command = "apprun " .. state.root })
-            state.status = ok and "Terminal requested" or tostring(err)
+            local ok = api.desktop.open_terminal({ title = "SDK Terminal", cwd = state.root, width = 48, height = 14 })
+            if not ok then
+                state.tab = "term"
+            end
+        else
+            state.tab = "term"
         end
-        return true
+    elseif id == "new_project" then
+        create_project(state, state.new_id)
+    elseif id == "prev_project" then
+        cycle_project(state, -1)
+    elseif id == "next_project" then
+        cycle_project(state, 1)
+    elseif id == "prev_file" then
+        cycle_file(state, -1)
+    elseif id == "next_file" then
+        cycle_file(state, 1)
+    elseif id == "new_file" then
+        local name = "lib/module" .. tostring(#(state.files or {}) + 1) .. ".lua"
+        write_file(state.root .. "/" .. name, "return {}\n")
+        state.files = project_files(state.root)
+        for i, file in ipairs(state.files) do
+            if file == name then state.file_index = i break end
+        end
+        load_current_file(state)
+    elseif id == "delete_file" and state.file ~= "app.lua" and state.file ~= "manifest" then
+        api.userfs.delete(state.root .. "/" .. state.file)
+        load_current_file(state)
+        state.status = "Deleted file"
+    elseif id == "complete_insert" then
+        local list = completions(state.complete_prefix or "HCAPI.")
+        if list[1] then
+            state.source = (state.source or "") .. list[1]
+            state.status = "Inserted " .. list[1]
+        end
+    elseif id == "complete_prefix" then
+        state.complete_prefix = state.complete_prefix == "app." and "HCAPI." or "app."
     elseif id == "doc_prev" or id == "doc_next" then
+        state.doc_query = ""
         local current = 1
         for i, doc_id in ipairs(DOC_IDS) do
-            if doc_id == state.doc_id then
-                current = i
-                break
-            end
+            if doc_id == state.doc_id then current = i break end
         end
         current = current + (id == "doc_next" and 1 or -1)
         if current < 1 then current = #DOC_IDS end
         if current > #DOC_IDS then current = 1 end
         state.doc_id = DOC_IDS[current]
-        state.status = "Loaded doc " .. state.doc_id
-        return true
+    elseif id == "doc_search" then
+        state.doc_query = state.doc_query == "" and "screen" or ""
+    else
+        return false
     end
-    return false
+    return true
 end
 
 function app.on_key(ctx)
     local state = ctx.state
     init(state)
-    if ctx.window and ctx.window.popup_kind == "terminal" then
-        state.term_input = state.term_input or ""
-        local event = ctx.event
+    local event = ctx.event
+    if state.tab == "term" or (ctx.window and ctx.window.popup_kind == "terminal") then
         if event.type == "char" then
             state.term_input = state.term_input .. tostring(event.raw and event.raw[2] or "")
             return true
@@ -371,28 +831,56 @@ function app.on_key(ctx)
         elseif event.type == "key" and event.raw and event.raw[2] == keys.enter then
             local command = state.term_input
             state.term_input = ""
-            run_term_command(state, command)
+            push_term(state, "> " .. command)
+            run_sdk_command(state, command)
             return true
         end
         return false
     end
-    if state.tab ~= "edit" then
-        return false
-    end
-    local event = ctx.event
-    if event.type == "char" then
-        local ch = event.raw and event.raw[2] or ""
-        state.source = (state.source or "") .. ch
-        return true
-    elseif event.type == "paste" then
-        state.source = (state.source or "") .. tostring(event.raw and event.raw[2] or "")
-        return true
-    elseif event.type == "key" and event.raw and event.raw[2] == keys.backspace then
-        state.source = tostring(state.source or ""):sub(1, math.max(0, #(state.source or "") - 1))
-        return true
-    elseif event.type == "key" and event.raw and event.raw[2] == keys.enter then
-        state.source = (state.source or "") .. "\n"
-        return true
+    if state.tab == "project" then
+        if event.type == "char" then
+            state.new_id = safe_id(tostring(state.new_id or "") .. tostring(event.raw and event.raw[2] or ""))
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.backspace then
+            state.new_id = tostring(state.new_id or ""):sub(1, math.max(0, #(state.new_id or "") - 1))
+            return true
+        end
+    elseif state.tab == "docs" then
+        if event.type == "char" then
+            state.doc_query = tostring(state.doc_query or "") .. tostring(event.raw and event.raw[2] or "")
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.backspace then
+            state.doc_query = tostring(state.doc_query or ""):sub(1, math.max(0, #(state.doc_query or "") - 1))
+            return true
+        end
+    elseif state.tab == "edit" then
+        if event.type == "char" then
+            state.source = (state.source or "") .. tostring(event.raw and event.raw[2] or "")
+            return true
+        elseif event.type == "paste" then
+            state.source = (state.source or "") .. tostring(event.raw and event.raw[2] or "")
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.backspace then
+            state.source = tostring(state.source or ""):sub(1, math.max(0, #(state.source or "") - 1))
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.enter then
+            state.source = (state.source or "") .. "\n"
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.tab then
+            local prefix = tostring(state.source or ""):match("([%w_%.:]+)$") or state.complete_prefix or "HCAPI."
+            local list = completions(prefix)
+            if list[1] then
+                state.source = tostring(state.source or ""):gsub("([%w_%.:]+)$", list[1])
+                state.status = "Completed " .. list[1]
+            end
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.up then
+            state.edit_scroll = math.max(0, (state.edit_scroll or 0) - 1)
+            return true
+        elseif event.type == "key" and event.raw and event.raw[2] == keys.down then
+            state.edit_scroll = (state.edit_scroll or 0) + 1
+            return true
+        end
     end
     return false
 end
