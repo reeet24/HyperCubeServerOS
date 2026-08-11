@@ -8,7 +8,6 @@ local CONFIG_PATH = "server_config"
 
 local INCLUDE_ROOTS = {
     "Kernal",
-    "appstore",
     "docs",
     "init.lua",
     "startup.lua",
@@ -698,6 +697,15 @@ local config = {
         root = appstore_root,
         db_root = "hypercube_appstore_db",
         min_replicas = appstore_replicas,
+        source_mode = "github",
+        github = {
+            owner = REPO_OWNER,
+            repo = REPO_NAME,
+            branch = DEFAULT_BRANCH,
+            root = "computer/0",
+            cache_ttl_ms = 600000,
+            hash_check_ms = 60000,
+        },
         drives = appstore_records,
         drive = {
             name = appstore_drives[1].name,
@@ -718,6 +726,8 @@ end
 local files = collect_files(tree, remote_root)
 config.installer.github.branch = branch
 config.installer.github.root = remote_root
+config.appstore.github.branch = branch
+config.appstore.github.root = remote_root
 print("Remote root: " .. (remote_root == "" and "/" or remote_root))
 print("Files: " .. tostring(#files))
 print("App Store root: " .. tostring(appstore_root))
@@ -725,7 +735,7 @@ print("App Store DB drives: " .. tostring(#appstore_records))
 print("")
 print("This will install HyperCubeServerOS source files on this computer.")
 print("Installer images will be fetched from GitHub on demand.")
-print("The appstore folder will be written to the selected App Store disk.")
+print("App Store seed apps will be fetched from GitHub on demand.")
 if not ask_yes("Continue install?", true) then
     print("Cancelled.")
     return

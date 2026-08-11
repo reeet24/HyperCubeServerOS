@@ -223,6 +223,23 @@ local function github_api_base(config)
     return "https://api.github.com/repos/" .. encode_segment(config.owner) .. "/" .. encode_segment(config.repo)
 end
 
+local function root_candidates(config)
+    local candidates = {}
+    local seen = {}
+    local function add(root)
+        root = normalize_path(root)
+        if not seen[root] then
+            seen[root] = true
+            candidates[#candidates + 1] = root
+        end
+    end
+    add(config.root)
+    add("computer/0")
+    add("0")
+    add("")
+    return candidates
+end
+
 local function github_raw_url(config, repo_path)
     local full = config.root ~= "" and combine(config.root, repo_path) or repo_path
     return "https://raw.githubusercontent.com/" .. encode_segment(config.owner) .. "/" .. encode_segment(config.repo)
@@ -230,20 +247,33 @@ local function github_raw_url(config, repo_path)
 end
 
 local function fetch_installer_tree_hash(config)
-    local full = config.root ~= "" and combine(config.root, "installer") or "installer"
-    local url = github_api_base(config) .. "/contents/" .. encode_path(full) .. "?ref=" .. encode_segment(config.branch)
-    local body, err = github_http_get(url)
-    if not body then
-        return nil, err
+    local branches = { config.branch }
+    if config.branch == "main" then
+        branches[#branches + 1] = "master"
     end
-    local decoded, json_err = decode_json(body)
-    if not decoded then
-        return nil, json_err
+    local last_err = nil
+    for _, branch in ipairs(branches) do
+        for _, root in ipairs(root_candidates(config)) do
+            local full = root ~= "" and combine(root, "installer") or "installer"
+            local url = github_api_base(config) .. "/contents/" .. encode_path(full) .. "?ref=" .. encode_segment(branch)
+            local body, err = github_http_get(url)
+            if body then
+                local decoded, json_err = decode_json(body)
+                if not decoded then
+                    last_err = json_err
+                elseif type(decoded) == "table" and decoded.sha then
+                    config.branch = branch
+                    config.root = root
+                    return decoded.sha
+                else
+                    last_err = "InstallerTreeHashMissing:" .. full
+                end
+            else
+                last_err = tostring(err) .. ":" .. full
+            end
+        end
     end
-    if type(decoded) == "table" and decoded.sha then
-        return decoded.sha
-    end
-    return nil, "InstallerTreeHashMissing"
+    return nil, last_err or "InstallerTreeHashMissing"
 end
 
 local function fetch_recursive_tree(config)
@@ -320,9 +350,13 @@ local function ensure_github_cache(source)
         end
     end
 
-    current_hash = current_hash or fetch_installer_tree_hash(config)
+    local hash_err
     if not current_hash then
-        return false, "GitHubInstallerHashUnavailable", true
+        current_hash, hash_err = fetch_installer_tree_hash(config)
+        key = repo_key(config)
+    end
+    if not current_hash then
+        return false, "GitHubInstallerHashUnavailable:" .. tostring(hash_err), true
     end
     local tree, tree_err = fetch_recursive_tree(config)
     if not tree then

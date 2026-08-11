@@ -632,6 +632,13 @@ local CONFIG_FIELDS = {
     { key = "appstore.root", label = "App Store root", kind = "string" },
     { key = "appstore.db_root", label = "App DB root", kind = "string" },
     { key = "appstore.min_replicas", label = "App DB replicas", kind = "number" },
+    { key = "appstore.source_mode", label = "App source mode", kind = "string" },
+    { key = "appstore.github.owner", label = "App GitHub owner", kind = "string" },
+    { key = "appstore.github.repo", label = "App GitHub repo", kind = "string" },
+    { key = "appstore.github.branch", label = "App GitHub branch", kind = "string" },
+    { key = "appstore.github.root", label = "App GitHub root", kind = "string" },
+    { key = "appstore.github.cache_ttl_ms", label = "App cache TTL ms", kind = "number" },
+    { key = "appstore.github.hash_check_ms", label = "App hash check ms", kind = "number" },
 }
 
 local function config_state(state)
@@ -1005,6 +1012,13 @@ local function ensure_screen_manager(state, hypercube)
                         local clean_ok, deleted = hypercube.server_config.delete_local_installer(result)
                         if clean_ok then
                             cleanup_note = " Deleted installer copies: " .. tostring(deleted or 0) .. "."
+                        end
+                    end
+                    if tostring(result and result.appstore and result.appstore.source_mode or "") == "github"
+                        and hypercube.server_config.delete_local_appstore_source then
+                        local clean_ok, deleted = hypercube.server_config.delete_local_appstore_source(result)
+                        if clean_ok then
+                            cleanup_note = cleanup_note .. " Deleted app source copies: " .. tostring(deleted or 0) .. "."
                         end
                     end
                     cfg_state.message = "Saved server_config." .. cleanup_note

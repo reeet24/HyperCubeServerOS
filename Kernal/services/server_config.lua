@@ -30,6 +30,15 @@ local DEFAULTS = {
         db_root = "hypercube_appstore_db",
         min_replicas = 2,
         drives = nil,
+        source_mode = "auto",
+        github = {
+            owner = "reeet24",
+            repo = "HyperCubeServerOS",
+            branch = "main",
+            root = "computer/0",
+            cache_ttl_ms = 600000,
+            hash_check_ms = 60000,
+        },
     },
 }
 
@@ -137,6 +146,16 @@ function server_config.load(path)
     config.appstore.root = normalize_path(config.appstore.root, DEFAULTS.appstore.root)
     config.appstore.db_root = normalize_path(config.appstore.db_root, DEFAULTS.appstore.db_root)
     config.appstore.min_replicas = tonumber(config.appstore.min_replicas) or DEFAULTS.appstore.min_replicas
+    config.appstore.source_mode = tostring(config.appstore.source_mode or DEFAULTS.appstore.source_mode)
+    config.appstore.github = merge_defaults(config.appstore.github, copy_table(DEFAULTS.appstore.github))
+    config.appstore.github.root = normalize_path(config.appstore.github.root, DEFAULTS.appstore.github.root)
+    config.appstore.github.branch = tostring(config.appstore.github.branch or DEFAULTS.appstore.github.branch)
+    config.appstore.github.owner = tostring(config.appstore.github.owner or DEFAULTS.appstore.github.owner)
+    config.appstore.github.repo = tostring(config.appstore.github.repo or DEFAULTS.appstore.github.repo)
+    config.appstore.github.cache_ttl_ms = tonumber(config.appstore.github.cache_ttl_ms)
+        or DEFAULTS.appstore.github.cache_ttl_ms
+    config.appstore.github.hash_check_ms = tonumber(config.appstore.github.hash_check_ms)
+        or DEFAULTS.appstore.github.hash_check_ms
     config.network.protocol = tostring(config.network.protocol or DEFAULTS.network.protocol)
     config.network.hostname = tostring(config.network.hostname or DEFAULTS.network.hostname)
     return config
@@ -174,6 +193,25 @@ function server_config.delete_local_installer(config)
     local seen = {}
     local deleted = 0
     for _, path in ipairs(paths) do
+        if path and path ~= "" and not seen[path] and fs and fs.exists and fs.delete and fs.exists(path) then
+            seen[path] = true
+            fs.delete(path)
+            deleted = deleted + 1
+        end
+    end
+    return true, deleted
+end
+
+function server_config.delete_local_appstore_source(config)
+    config = config or server_config.load()
+    local roots = {
+        normalize_path(config.appstore and config.appstore.root, DEFAULTS.appstore.root),
+        DEFAULTS.appstore.root,
+    }
+    local seen = {}
+    local deleted = 0
+    for _, root in ipairs(roots) do
+        local path = normalize_path(root .. "/apps")
         if path and path ~= "" and not seen[path] and fs and fs.exists and fs.delete and fs.exists(path) then
             seen[path] = true
             fs.delete(path)

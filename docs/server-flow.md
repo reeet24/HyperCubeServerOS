@@ -250,6 +250,8 @@ The default authorized account is `tesserac`.
 `update.*` remains available even when a phone is rejected for ROM mismatch.
 When `server_config.installer.source_mode` is `github`, the server updater skips local `installer/...` files. `installer.lua` checks the configured GitHub installer tree hash, downloads the installer tree into memory only when needed, and drops the cache after the configured idle timeout.
 
+When `server_config.appstore.source_mode` is `github`, seed appstore apps under `appstore/apps` are also skipped by server updates. `appstore.lua` checks the configured GitHub appstore tree hash, serves GitHub-backed seed apps from memory, and drops the cache after the configured idle timeout. Apps published through the appstore API remain in the sharded appstore DiskDB.
+
 ## Where To Add New Work
 
 - New phone app: `installer/hypercube_phone/apps/<app_id>/app.lua`

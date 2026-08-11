@@ -49,7 +49,7 @@ Useful options:
 - `update_server.lua --root computer/0`: Force the server source root if auto-detection fails.
 - `update_server.lua --token <token>`: Use a GitHub token to avoid API rate limits. You can also store the token in a local `github_token` file.
 
-The updater replaces server source paths such as `Kernal`, `appstore`, `docs`, `init.lua`, and `startup.lua`, while preserving local `logs`, `user`, `hypercube_db`, disk records, `server_config`, and admin tokens. If `server_config.installer.source_mode` is `github`, update previews and installs skip `installer/...` files and delete local installer copies so the server disk stays small. If the installer source is stored locally or on another disk, update diffs still show repo paths under `installer/...` but writes are applied to the configured installer disk path. Restart the server after updating.
+The updater replaces server source paths such as `Kernal`, `docs`, `init.lua`, and `startup.lua`, while preserving local `logs`, `user`, `hypercube_db`, disk records, `server_config`, and admin tokens. If `server_config.installer.source_mode` is `github`, update previews and installs skip `installer/...` files and delete local installer copies so the server disk stays small. If `server_config.appstore.source_mode` is `github`, updates skip `appstore/...` seed files and delete local `appstore/apps` copies. If these sources are stored locally or on another disk, update diffs still show repo paths under `installer/...` and `appstore/...` but writes are applied to the configured local paths. Restart the server after updating.
 
 ## First-Time Setup
 
@@ -63,7 +63,7 @@ The setup script:
 - GitHub branch to install from, defaulting to `main`.
 - Server source download/install from `reeet24/HyperCubeServerOS`.
 
-The setup script writes `server_config` and `hypercube_server_install`. On boot, `init.lua` uses that config for rednet, DiskDB, and phone installer metadata. First-time setup defaults `installer.source_mode` to `github`, so device installer images are fetched from GitHub on demand instead of stored on the server disk. DiskDB only uses the configured DB drives, so appstore and user data drives are not accidentally mixed into the replicated database. Later updates use the saved install record for patch checks and use `server_config` when applying local path changes.
+The setup script writes `server_config` and `hypercube_server_install`. On boot, `init.lua` uses that config for rednet, DiskDB, appstore storage, and phone installer metadata. First-time setup defaults `installer.source_mode` and `appstore.source_mode` to `github`, so device installer images and seed appstore apps are fetched from GitHub on demand instead of stored on the server disk. DiskDB only uses the configured DB drives, so appstore and user data drives are not accidentally mixed into the replicated database. Later updates use the saved install record for patch checks and use `server_config` when applying local path changes.
 
 ## Kernel Pieces
 
@@ -215,6 +215,8 @@ For exact duplicates, prefer profile-level single-file inheritance over patches.
 
 When `server_config.installer.source_mode = "github"`, the server does not need a local `installer/` folder. On package or metadata requests, `installer.lua` checks the GitHub installer tree hash for the configured repo/branch/root, downloads the installer tree into memory only when the hash changed or no cache exists, and drops the in-memory copy after `installer.github.cache_ttl_ms` of idle time. Saving `github` mode from the Config page deletes local installer copies immediately. Use `installer.source_mode = "local"` to force disk-only source, or `auto` to use local files when present and GitHub when local installer files are missing.
 
+If the configured GitHub root is wrong, installer and appstore GitHub loaders try `computer/0`, `0`, and the repository root before failing. `GitHubInstallerHashUnavailable:<detail>` or `GitHubAppStoreHashUnavailable:<detail>` usually means HTTP is disabled, the repo/branch is wrong, GitHub rate-limited the server, or the repository does not contain the expected `installer` or `appstore/apps` folder.
+
 The desktop profiles reuse the phone app runtime and appstore package format by inheriting `installer/hypercube_phone`, then overlay desktop-specific files from `installer/hypercube_desktop`. Desktop boots with a MacOS-style shell, menu bar, bottom dock, and a multi-window app manager. Business desktop uses the business device identity for future business-only features.
 
 `desktop`, `business_desktop`, and `user_server` install as network bootstrap floppies. Boot the target computer from the floppy once; the shim downloads the full ROM from the main server, writes it to the target computer, then the disk can be removed before reboot. This avoids filling the floppy with the full app/runtime image.
@@ -249,7 +251,9 @@ Services receive `ServiceAPI` and `HCAPI` aliases. The API exposes service-scope
 
 ## App Store
 
-Server-hosted app packages are stored in a sharded DiskDB under `hypercube_appstore_db`, using `appstore:*` records. By default it uses the same configured DB drives and replica count as user data. The repo folder `appstore/apps` is seed material: on boot, missing seed apps are imported into DiskDB, then `appstore.list` and `appstore.download` serve from DiskDB.
+Server-published app packages are stored in a sharded DiskDB under `hypercube_appstore_db`, using `appstore:*` records. By default it uses the configured appstore DB drives and replica count. The repo folder `appstore/apps` is seed material when `appstore.source_mode` is `local` or `auto` with local files present.
+
+When `server_config.appstore.source_mode = "github"`, the server does not need local seed app files. `appstore.lua` checks the configured GitHub `appstore/apps` tree hash, downloads seed apps into memory only when the appstore is listed or a GitHub-backed app is downloaded, serves those apps directly from memory, and drops the cache after `appstore.github.cache_ttl_ms` of idle time. DB-published apps still work and override a GitHub app with the same ID. Saving `github` mode from the Config page deletes local `appstore/apps` copies immediately.
 
 Apps may be single-file packages with only `app.lua` or multi-file bundles with local modules and assets:
 

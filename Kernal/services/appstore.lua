@@ -1,5 +1,6 @@
 local appstore = {}
 local diskdb_ok, diskdb_driver = pcall(require, "Kernal.drivers.diskdb")
+local config_ok, server_config = pcall(require, "Kernal.services.server_config")
 
 local APPSTORE_ROOT = "appstore"
 local APP_ROOT = "appstore/apps"
@@ -14,6 +15,15 @@ local DEPRECATED_APPS = {
 }
 
 local SEED_APPS = {}
+local GITHUB_DEFAULTS = {
+    owner = "reeet24",
+    repo = "HyperCubeServerOS",
+    branch = "main",
+    root = "computer/0",
+    cache_ttl_ms = 600000,
+    hash_check_ms = 60000,
+}
+local github_cache = nil
 
 local function now()
     if os.epoch then
@@ -157,6 +167,294 @@ local function checksum(text)
         b = (b + a) % 65521
     end
     return tostring((b * 65536 + a) % 2147483647)
+end
+
+local function normalize_path(path)
+    path = tostring(path or ""):gsub("\\", "/")
+    path = path:gsub("^%./", ""):gsub("^/+", "")
+    path = path:gsub("//+", "/")
+    if path == "." then
+        return ""
+    end
+    return path
+end
+
+local function trim(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$")
+end
+
+local function read_file_trim(path)
+    if not fs or not fs.exists or not fs.open or not fs.exists(path) then
+        return nil
+    end
+    local handle = fs.open(path, "r")
+    if not handle then
+        return nil
+    end
+    local data = trim(handle.readAll())
+    handle.close()
+    if data == "" then
+        return nil
+    end
+    return data
+end
+
+local function encode_segment(segment)
+    segment = tostring(segment or "")
+    return segment:gsub("([^%w%-%_%.%~])", function(char)
+        return string.format("%%%02X", char:byte())
+    end)
+end
+
+local function encode_path(path)
+    path = normalize_path(path)
+    if path == "" then
+        return ""
+    end
+    local out = {}
+    for segment in path:gmatch("[^/]+") do
+        out[#out + 1] = encode_segment(segment)
+    end
+    return table.concat(out, "/")
+end
+
+local function github_http_get(url, accept)
+    if not http or not http.get then
+        return nil, "HttpUnavailable"
+    end
+    local headers = {
+        ["User-Agent"] = "HyperCubeServerOS-AppStore",
+        ["Accept"] = accept or "application/vnd.github+json",
+    }
+    local token = read_file_trim("github_token")
+    if token then
+        headers.Authorization = "Bearer " .. token
+    end
+    local ok, response_or_err, request_err = pcall(http.get, url, headers)
+    if not ok then
+        return nil, response_or_err
+    end
+    local response = response_or_err
+    if not response and tostring(request_err or ""):lower():match("header") then
+        ok, response_or_err, request_err = pcall(http.get, url)
+        if not ok then
+            return nil, response_or_err
+        end
+        response = response_or_err
+    end
+    if not response then
+        return nil, request_err or "HttpRequestFailed"
+    end
+    local body = response.readAll()
+    local code = response.getResponseCode and response.getResponseCode() or 200
+    response.close()
+    if tonumber(code) and tonumber(code) >= 400 then
+        return nil, "Http" .. tostring(code) .. ":" .. tostring(body):sub(1, 100)
+    end
+    return body
+end
+
+local function decode_json(text)
+    if not textutils or not textutils.unserializeJSON then
+        return nil, "JsonUnavailable"
+    end
+    local ok, decoded = pcall(textutils.unserializeJSON, text)
+    if not ok or decoded == nil then
+        return nil, ok and "JsonDecodeFailed" or decoded
+    end
+    return decoded
+end
+
+local function appstore_config()
+    if config_ok and server_config and server_config.load then
+        local ok, config = pcall(server_config.load)
+        if ok and type(config) == "table" then
+            return config.appstore or {}
+        end
+    end
+    return {}
+end
+
+local function github_config()
+    local cfg = appstore_config()
+    local github = cfg.github or {}
+    return {
+        source_mode = tostring(cfg.source_mode or "auto"),
+        owner = tostring(github.owner or GITHUB_DEFAULTS.owner),
+        repo = tostring(github.repo or GITHUB_DEFAULTS.repo),
+        branch = tostring(github.branch or GITHUB_DEFAULTS.branch),
+        root = normalize_path(github.root or GITHUB_DEFAULTS.root),
+        cache_ttl_ms = tonumber(github.cache_ttl_ms) or GITHUB_DEFAULTS.cache_ttl_ms,
+        hash_check_ms = tonumber(github.hash_check_ms) or GITHUB_DEFAULTS.hash_check_ms,
+    }
+end
+
+local function repo_key(config)
+    return table.concat({ config.owner, config.repo, config.branch, config.root }, ":")
+end
+
+local function github_api_base(config)
+    return "https://api.github.com/repos/" .. encode_segment(config.owner) .. "/" .. encode_segment(config.repo)
+end
+
+local function root_candidates(config)
+    local candidates = {}
+    local seen = {}
+    local function add(root)
+        root = normalize_path(root)
+        if not seen[root] then
+            seen[root] = true
+            candidates[#candidates + 1] = root
+        end
+    end
+    add(config.root)
+    add("computer/0")
+    add("0")
+    add("")
+    return candidates
+end
+
+local function github_raw_url(config, repo_path)
+    local full = config.root ~= "" and combine(config.root, repo_path) or repo_path
+    return "https://raw.githubusercontent.com/" .. encode_segment(config.owner) .. "/" .. encode_segment(config.repo)
+        .. "/" .. encode_segment(config.branch) .. "/" .. encode_path(full)
+end
+
+local function fetch_appstore_tree_hash(config)
+    local branches = { config.branch }
+    if config.branch == "main" then
+        branches[#branches + 1] = "master"
+    end
+    local last_err = nil
+    for _, branch in ipairs(branches) do
+        for _, root in ipairs(root_candidates(config)) do
+            local full = root ~= "" and combine(root, "appstore/apps") or "appstore/apps"
+            local url = github_api_base(config) .. "/contents/" .. encode_path(full) .. "?ref=" .. encode_segment(branch)
+            local body, err = github_http_get(url)
+            if body then
+                local decoded, json_err = decode_json(body)
+                if not decoded then
+                    last_err = json_err
+                elseif type(decoded) == "table" and decoded.sha then
+                    config.branch = branch
+                    config.root = root
+                    return decoded.sha
+                else
+                    last_err = "AppStoreTreeHashMissing:" .. full
+                end
+            else
+                last_err = tostring(err) .. ":" .. full
+            end
+        end
+    end
+    return nil, last_err or "AppStoreTreeHashMissing"
+end
+
+local function fetch_recursive_tree(config)
+    local url = github_api_base(config) .. "/git/trees/" .. encode_segment(config.branch) .. "?recursive=1"
+    local body, err = github_http_get(url)
+    if not body and config.branch == "main" then
+        url = github_api_base(config) .. "/git/trees/master?recursive=1"
+        body, err = github_http_get(url)
+        if body then
+            config.branch = "master"
+        end
+    end
+    if not body then
+        return nil, err
+    end
+    local decoded, json_err = decode_json(body)
+    if not decoded then
+        return nil, json_err
+    end
+    if type(decoded.tree) ~= "table" then
+        return nil, decoded.message or "GitTreeMissing"
+    end
+    return decoded
+end
+
+local function local_app_source_exists()
+    return fs and fs.exists and fs.exists(APP_ROOT)
+end
+
+local function should_use_github(config)
+    if config.source_mode == "local" then
+        return false
+    end
+    if config.source_mode == "github" then
+        return true
+    end
+    return not local_app_source_exists()
+end
+
+local function source_mode()
+    return github_config().source_mode
+end
+
+local function expire_github_cache(config)
+    if github_cache and now() - tonumber(github_cache.last_used or 0) > config.cache_ttl_ms then
+        github_cache = nil
+    end
+end
+
+local function ensure_github_cache()
+    local config = github_config()
+    expire_github_cache(config)
+    if not should_use_github(config) then
+        return true, nil, false
+    end
+    local key = repo_key(config)
+    local current_hash
+    if github_cache and github_cache.key == key then
+        if now() - tonumber(github_cache.checked_at or 0) < config.hash_check_ms then
+            github_cache.last_used = now()
+            return true, github_cache, true
+        end
+        current_hash = fetch_appstore_tree_hash(config)
+        if current_hash and current_hash == github_cache.tree_hash then
+            github_cache.checked_at = now()
+            github_cache.last_used = now()
+            return true, github_cache, true
+        end
+    end
+    local hash_err
+    if not current_hash then
+        current_hash, hash_err = fetch_appstore_tree_hash(config)
+        key = repo_key(config)
+    end
+    if not current_hash then
+        return false, "GitHubAppStoreHashUnavailable:" .. tostring(hash_err), true
+    end
+    local tree, tree_err = fetch_recursive_tree(config)
+    if not tree then
+        return false, tree_err, true
+    end
+    local files = {}
+    local root_prefix = config.root ~= "" and (config.root .. "/appstore/apps/") or "appstore/apps/"
+    for _, entry in ipairs(tree.tree or {}) do
+        local path = normalize_path(entry.path)
+        if entry.type == "blob" and path:sub(1, #root_prefix) == root_prefix then
+            local repo_path = "appstore/apps/" .. path:sub(#root_prefix + 1)
+            local data, data_err = github_http_get(github_raw_url(config, repo_path), "application/octet-stream")
+            if not data then
+                return false, "GitHubAppStoreFileFailed:" .. repo_path .. ":" .. tostring(data_err), true
+            end
+            files[repo_path] = data
+        end
+    end
+    github_cache = {
+        key = key,
+        owner = config.owner,
+        repo = config.repo,
+        branch = config.branch,
+        root = config.root,
+        tree_hash = current_hash,
+        files = files,
+        checked_at = now(),
+        last_used = now(),
+        loaded_at = now(),
+    }
+    return true, github_cache, true
 end
 
 local function app_manifest_key(id)
@@ -433,6 +731,83 @@ local function read_app_from_fs(id)
     return manifest
 end
 
+local function read_app_from_github(id)
+    local safe, id_err = safe_id(id)
+    if not safe then
+        return nil, id_err
+    end
+    if DEPRECATED_APPS[safe] then
+        return nil, "AppDeprecated"
+    end
+    local ok, cache_or_err = ensure_github_cache()
+    if not ok then
+        return nil, cache_or_err
+    end
+    if not github_cache or not github_cache.files then
+        return nil, "AppNotFound"
+    end
+    local prefix = "appstore/apps/" .. safe .. "/"
+    local app_source = github_cache.files[prefix .. "app.lua"]
+    if type(app_source) ~= "string" then
+        return nil, "AppNotFound"
+    end
+    local manifest = default_manifest(safe)
+    local manifest_data = github_cache.files[prefix .. "manifest"]
+    local loaded = manifest_data and unserialize(manifest_data) or nil
+    if type(loaded) == "table" then
+        for key, value in pairs(loaded) do
+            if key ~= "source" and key ~= "app_lua" and key ~= "code" then
+                manifest[key] = value
+            end
+        end
+    end
+    manifest.id = safe
+    manifest.source = app_source
+    local files = {}
+    for path, data in pairs(github_cache.files) do
+        if path:sub(1, #prefix) == prefix then
+            local relative = safe_relative(path:sub(#prefix + 1))
+            if relative and relative ~= "manifest" and relative ~= APP_INTEGRITY_FILE then
+                files[#files + 1] = {
+                    path = relative,
+                    data = data or "",
+                }
+            end
+        end
+    end
+    table.sort(files, function(a, b)
+        return tostring(a.path) < tostring(b.path)
+    end)
+    manifest.files = files
+    manifest.file_count = #files
+    manifest.integrity = build_integrity(manifest, files)
+    manifest.integrity_encoded = encode_integrity(manifest.integrity)
+    manifest.protected_file_count = #(manifest.integrity.files or {})
+    manifest.mutable_paths = manifest.integrity.mutable_paths
+    return manifest
+end
+
+local function list_github_apps()
+    local ok = ensure_github_cache()
+    if not ok or not github_cache or not github_cache.files then
+        return {}
+    end
+    local seen = {}
+    local apps = {}
+    for path in pairs(github_cache.files) do
+        local id = path:match("^appstore/apps/([^/]+)/app%.lua$")
+        id = id and safe_id(id)
+        if id and not seen[id] and not DEPRECATED_APPS[id] then
+            seen[id] = true
+            local item = read_app_from_github(id)
+            if item then
+                apps[#apps + 1] = public_item(item)
+            end
+        end
+    end
+    return apps
+end
+
 local function manifest_for_db(item, files)
     local manifest = {
         format = "HyperCubeAppStoreApp",
@@ -558,7 +933,7 @@ local function read_app(id)
     end
     local manifest = db_get(app_manifest_key(safe))
     if type(manifest) ~= "table" then
-        return nil, "AppNotFound"
+        return read_app_from_github(safe)
     end
     local item = db_manifest_to_item(manifest)
     local files = {}
@@ -616,7 +991,7 @@ local function ensure_seed_apps()
         end
     end
 
-    if fs and fs.exists and fs.list and fs.exists(APP_ROOT) then
+    if source_mode() ~= "github" and fs and fs.exists and fs.list and fs.exists(APP_ROOT) then
         for _, id in ipairs(fs.list(APP_ROOT)) do
             local safe = safe_id(id)
             if safe then
@@ -638,8 +1013,9 @@ end
 local function list_apps()
     ensure_seed_apps()
     local apps = {}
+    local seen = {}
     if not APPSTORE_DB then
-        return apps
+        return list_github_apps()
     end
 
     local index = load_index()
@@ -649,6 +1025,14 @@ local function list_apps()
             local item = db_manifest_to_item(manifest)
             item.protected_file_count = protected_file_count_from_manifest(manifest)
             apps[#apps + 1] = public_item(item)
+            seen[item.id] = true
+        end
+    end
+
+    for _, item in ipairs(list_github_apps()) do
+        if item.id and not seen[item.id] then
+            apps[#apps + 1] = item
+            seen[item.id] = true
         end
     end
 
@@ -833,8 +1217,40 @@ function appstore.start(hypercube)
         return false, err
     end
     while true do
+        if appstore.prune_github_cache and appstore.prune_github_cache() and hypercube.logger then
+            hypercube.logger.info("github appstore source cache expired", hypercube.root_context)
+        end
         coroutine.yield("tick")
     end
+end
+
+function appstore.github_cache_status()
+    local config = github_config()
+    expire_github_cache(config)
+    local count = 0
+    if github_cache and github_cache.files then
+        for _ in pairs(github_cache.files) do
+            count = count + 1
+        end
+    end
+    return {
+        source_mode = config.source_mode,
+        owner = config.owner,
+        repo = config.repo,
+        branch = config.branch,
+        root = config.root,
+        cached = github_cache ~= nil,
+        cached_files = count,
+        tree_hash = github_cache and github_cache.tree_hash or nil,
+        loaded_at = github_cache and github_cache.loaded_at or nil,
+        last_used = github_cache and github_cache.last_used or nil,
+    }
+end
+
+function appstore.prune_github_cache()
+    local before = github_cache ~= nil
+    expire_github_cache(github_config())
+    return before and github_cache == nil
 end
 
 appstore.root = APPSTORE_ROOT
