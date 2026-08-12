@@ -15,8 +15,8 @@ local app = {
 local SAVE_FILE = "best.txt"
 local SEGMENTS = 14
 local ROAD_DEPTH = 84
-local MAX_SPEED = 1.85
-local MIN_SPEED = 0.55
+local MAX_SPEED = 2.25
+local MIN_SPEED = 0
 
 local function clamp(value, min_value, max_value)
     value = tonumber(value) or min_value
@@ -56,15 +56,16 @@ local function ensure_state(state)
     state.ready = true
     state.running = true
     state.player_x = 0
-    state.speed = 0.9
+    state.speed = 0.25
     state.distance = 0
     state.score = 0
     state.best = read_best()
     state.health = 3
-    state.message = "Arrow keys steer"
+    state.message = "W/S throttle  A/D steer"
     state.last_tick = now()
     state.last_hit = 0
     state.flash = 0
+    state.input = {}
 end
 
 local function rect(x, y, w, h, bg)
@@ -101,7 +102,8 @@ local function projected_lane(ctx, state, z, lane_x)
     local y = horizon + (near_y - horizon) * (1 - depth * depth)
     local road_w = math.max(5, width * (0.12 + perspective * 0.48))
     local curve = curve_at(z + (state.distance or 0) + 24)
-    local center = ctx.x + width / 2 + curve * width * 0.18 * perspective
+    local driver = state.player_x or 0
+    local center = ctx.x + width / 2 + curve * width * 0.18 * perspective - driver * road_w * 0.36 * perspective
     return center + lane_x * road_w * 0.22, y, road_w
 end
 
@@ -173,19 +175,27 @@ local function draw_obstacles(ctx, state)
     end
 end
 
-local function draw_car(ctx, state)
-    local cx = ctx.x + math.floor(ctx.width / 2) + math.floor((state.player_x or 0) * ctx.width * 0.18)
-    local cy = ctx.y + ctx.height - 3
-    local car = state.flash and state.flash > 0 and C.orange or C.blue
-    quad(cx - 5, cy, cx + 5, cy, cx + 3, cy - 3, cx - 3, cy - 3, car)
-    tri(cx - 3, cy - 3, cx + 3, cy - 3, cx, cy - 5, C.cyan)
-    rect(cx - 4, cy, 2, 1, C.black)
-    rect(cx + 2, cy, 2, 1, C.black)
+local function draw_cockpit(ctx, state)
+    local bottom = ctx.y + ctx.height - 1
+    local dash_y = math.max(ctx.y + 4, bottom - 4)
+    local center = ctx.x + math.floor(ctx.width / 2)
+    local wheel_x = center + math.floor((state.player_x or 0) * 3)
+    local alert = state.flash and state.flash > 0
+    local dash = alert and C.orange or C.black
+
+    quad(ctx.x, dash_y, ctx.x + ctx.width - 1, dash_y, ctx.x + ctx.width - 1, bottom, ctx.x, bottom, dash)
+    quad(ctx.x, dash_y - 1, ctx.x + 4, dash_y, ctx.x + 2, bottom, ctx.x, bottom, C.gray)
+    quad(ctx.x + ctx.width - 5, dash_y, ctx.x + ctx.width - 1, dash_y - 1, ctx.x + ctx.width - 1, bottom, ctx.x + ctx.width - 3, bottom, C.gray)
+    tri(wheel_x - 4, bottom - 1, wheel_x + 4, bottom - 1, wheel_x, dash_y + 1, C.lightGray)
+    rect(wheel_x - 2, bottom - 2, 5, 1, C.gray)
+    rect(center - 8, dash_y + 1, 5, 2, C.gray)
+    rect(center + 4, dash_y + 1, 5, 2, C.gray)
 end
 
 local function draw_hud(ctx, state)
     local speed = math.floor((state.speed or 0) * 100)
-    local top = "Road3D  " .. tostring(speed) .. "km/h  Score " .. tostring(math.floor(state.score or 0))
+    local brake = state.input and state.input.ebrake and "  EBrake" or ""
+    local top = "Road3D  " .. tostring(speed) .. "km/h  Score " .. tostring(math.floor(state.score or 0)) .. brake
     api.screen.write(ctx.x, ctx.y, truncate(top, ctx.width), C.white, C.black)
     local bottom = "Best " .. tostring(math.floor(state.best or 0)) .. "  HP " .. tostring(state.health or 0)
     if not state.running then
@@ -199,13 +209,14 @@ end
 local function reset(state)
     state.running = true
     state.player_x = 0
-    state.speed = 0.9
+    state.speed = 0.25
     state.distance = 0
     state.score = 0
     state.health = 3
-    state.message = "Arrow keys steer"
+    state.message = "W/S throttle  A/D steer"
     state.last_hit = 0
     state.flash = 0
+    state.input = {}
     state.last_tick = now()
 end
 
@@ -243,7 +254,7 @@ function app.render(ctx)
     draw_background(ctx, state)
     draw_road(ctx, state)
     draw_obstacles(ctx, state)
-    draw_car(ctx, state)
+    draw_cockpit(ctx, state)
     draw_hud(ctx, state)
 end
 
@@ -256,16 +267,34 @@ function app.on_tick(ctx)
     if not state.running then
         return false
     end
+    local input = state.input or {}
+    local steer = 0
+    if input.left then
+        steer = steer - 1
+    end
+    if input.right then
+        steer = steer + 1
+    end
+    local throttle = input.throttle and 1 or 0
+    local brake = input.brake and 1 or 0
+    local ebrake = input.ebrake and 1 or 0
+    local speed = state.speed or 0
     local curve = curve_at((state.distance or 0) + 12)
-    state.player_x = clamp((state.player_x or 0) - curve * dt * 0.22, -1.45, 1.45)
-    state.speed = clamp((state.speed or 0.9) + dt * 0.035, MIN_SPEED, MAX_SPEED)
-    state.distance = (state.distance or 0) + (state.speed or 1) * dt * 26
-    state.score = (state.score or 0) + (state.speed or 1) * dt * 12
+    local steer_power = 1.05 + math.min(speed, 1.4) * 0.42 + ebrake * 0.55
+
+    state.player_x = clamp((state.player_x or 0) + steer * dt * steer_power - curve * speed * dt * 0.22, -1.45, 1.45)
+    speed = speed + throttle * dt * 1.15
+    speed = speed - brake * dt * 1.3
+    speed = speed - ebrake * dt * 1.8
+    speed = speed - dt * (0.10 + speed * 0.035)
+    state.speed = clamp(speed, MIN_SPEED, MAX_SPEED)
+    state.distance = (state.distance or 0) + (state.speed or 0) * dt * 30
+    state.score = (state.score or 0) + (state.speed or 0) * dt * 12
     if state.flash and state.flash > 0 then
         state.flash = state.flash - 1
     end
     if math.abs(state.player_x or 0) > 1.12 then
-        state.speed = math.max(MIN_SPEED, (state.speed or 1) - dt * 0.35)
+        state.speed = math.max(MIN_SPEED, (state.speed or 0) - dt * 0.45)
         state.message = "Off road"
     elseif state.message == "Off road" then
         state.message = nil
@@ -277,32 +306,62 @@ function app.on_tick(ctx)
     return true
 end
 
+local function set_input(state, key, pressed)
+    state.input = state.input or {}
+    if not keys then
+        return false
+    end
+    if key == keys.left or key == keys.a then
+        state.input.left = pressed
+        return true
+    elseif key == keys.right or key == keys.d then
+        state.input.right = pressed
+        return true
+    elseif key == keys.up or key == keys.w then
+        state.input.throttle = pressed
+        return true
+    elseif key == keys.down or key == keys.s then
+        state.input.brake = pressed
+        return true
+    elseif key == keys.space then
+        state.input.ebrake = pressed
+        return true
+    end
+    return false
+end
+
+local function event_key(ctx)
+    local event = ctx.event or {}
+    return event.key or event.keycode or (event.raw and event.raw[2])
+end
+
 function app.on_key(ctx)
     local state = ctx.state
     ensure_state(state)
     if not keys then
         return false
     end
-    local key = ctx.event.raw and ctx.event.raw[2]
-    if key == keys.left or key == keys.a then
-        state.player_x = clamp((state.player_x or 0) - 0.25, -1.45, 1.45)
-        return true
-    elseif key == keys.right or key == keys.d then
-        state.player_x = clamp((state.player_x or 0) + 0.25, -1.45, 1.45)
-        return true
-    elseif key == keys.up or key == keys.w then
-        state.speed = clamp((state.speed or 0.9) + 0.16, MIN_SPEED, MAX_SPEED)
-        return true
-    elseif key == keys.down or key == keys.s then
-        state.speed = clamp((state.speed or 0.9) - 0.2, MIN_SPEED, MAX_SPEED)
-        return true
-    elseif key == keys.enter or key == keys.space then
+    local event = ctx.event or {}
+    local key = event_key(ctx)
+    if event.type == "key_up" then
+        return set_input(state, key, false)
+    end
+    if key == keys.enter or (not state.running and key == keys.space) then
         if not state.running then
             reset(state)
         end
         return true
     end
+    if set_input(state, key, true) then
+        return true
+    end
     return false
+end
+
+function app.on_key_up(ctx)
+    local state = ctx.state
+    ensure_state(state)
+    return set_input(state, event_key(ctx), false)
 end
 
 function app.on_touch(ctx)
@@ -326,6 +385,9 @@ function app.on_pause(ctx)
     local state = ctx.state
     if state and state.best then
         save_best(state.best)
+    end
+    if state then
+        state.input = {}
     end
 end
 
