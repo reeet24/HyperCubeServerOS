@@ -2,7 +2,7 @@
   id = "road3d",
   title = "Road3D",
   label = "Race",
-  version = "1.1.0",
+  version = "1.1.1",
   author = "Tesserac",
   description = "First-person pseudo-3D racing game using HyperCube screen triangles and quads.",
   refresh_rate = 30,
