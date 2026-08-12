@@ -1,0 +1,11 @@
+{
+  id = "road3d",
+  title = "Road3D",
+  label = "Race",
+  version = "1.0.0",
+  author = "Tesserac",
+  description = "Minimal pseudo-3D racing game using HyperCube screen triangles and quads.",
+  refresh_rate = 30,
+  render_mode = "exclusive",
+  devices = { "TDesktop", "TBusinessDesktop" },
+}
