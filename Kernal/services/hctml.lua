@@ -12,10 +12,16 @@ local ALLOWED_TAGS = {
     link = true,
     button = true,
     code = true,
+    form = true,
+    input = true,
+    textarea = true,
+    select = true,
+    option = true,
 }
 
 local SELF_CLOSING = {
     br = true,
+    input = true,
 }
 
 local function trim(value)
@@ -161,7 +167,13 @@ local function first_page(root)
     return root
 end
 
-local function push_line(lines, text, kind, node)
+local function copy_attrs(target, attrs)
+    for key, value in pairs(attrs or {}) do
+        target[key] = value
+    end
+end
+
+local function push_line(lines, text, kind, node, form)
     text = tostring(text or "")
     if text == "" and kind ~= "break" then
         return
@@ -177,49 +189,109 @@ local function push_line(lines, text, kind, node)
         href = attrs.href,
         action = attrs.action,
     }
+    copy_attrs(lines[#lines], attrs)
+    if form then
+        lines[#lines].form_id = form.id
+        lines[#lines].form_action = form.action
+        lines[#lines].form_method = form.method
+    end
 end
 
-local function render_node(node, lines)
+local function option_value(node)
+    local attrs = node and node.attrs or {}
+    local label = compact_text(node)
+    return {
+        value = attrs.value or label,
+        label = attrs.label or label,
+    }
+end
+
+local function render_node(node, lines, form)
     if node.type == "text" then
         local text = trim(node.text:gsub("%s+", " "))
         if text ~= "" then
-            push_line(lines, text, "text", node)
+            push_line(lines, text, "text", node, form)
         end
         return
     end
 
     if node.type == "br" then
-        push_line(lines, "", "break", node)
+        push_line(lines, "", "break", node, form)
         return
     end
 
     if node.type == "h1" or node.type == "h2" or node.type == "p" or node.type == "code" then
-        push_line(lines, compact_text(node), node.type, node)
+        push_line(lines, compact_text(node), node.type, node, form)
         return
     end
 
     if node.type == "link" then
-        push_line(lines, compact_text(node), "link", node)
+        push_line(lines, compact_text(node), "link", node, form)
         return
     end
 
     if node.type == "button" then
-        push_line(lines, compact_text(node), "button", node)
+        push_line(lines, compact_text(node), "button", node, form)
         return
     end
 
     if node.type == "item" then
-        push_line(lines, "- " .. compact_text(node), "item", node)
+        push_line(lines, "- " .. compact_text(node), "item", node, form)
         return
     end
 
     if node.type == "card" then
-        push_line(lines, compact_text(node), "card", node)
+        push_line(lines, compact_text(node), "card", node, form)
+        return
+    end
+
+    if node.type == "form" then
+        local attrs = node.attrs or {}
+        local next_form = {
+            id = attrs.id or attrs.name or ("form_" .. tostring(#lines + 1)),
+            action = attrs.action or attrs.href or "",
+            method = tostring(attrs.method or "GET"):upper(),
+        }
+        for _, child in ipairs(node.children or {}) do
+            render_node(child, lines, next_form)
+        end
+        return
+    end
+
+    if node.type == "input" then
+        local attrs = node.attrs or {}
+        push_line(lines, attrs.label or attrs.placeholder or attrs.name or "Input", "input", node, form)
+        return
+    end
+
+    if node.type == "textarea" then
+        local attrs = node.attrs or {}
+        local text = compact_text(node)
+        if text == "" then
+            text = attrs.placeholder or attrs.name or "Text"
+        end
+        push_line(lines, text, "textarea", node, form)
+        return
+    end
+
+    if node.type == "select" then
+        local line = {
+            type = "select",
+            attrs = node.attrs or {},
+        }
+        push_line(lines, (node.attrs and (node.attrs.label or node.attrs.name)) or "Select", "select", line, form)
+        lines[#lines].options = {}
+        for _, child in ipairs(node.children or {}) do
+            if child.type == "option" then
+                local options = lines[#lines].options
+                options[#options + 1] = option_value(child)
+            end
+        end
         return
     end
 
     for _, child in ipairs(node.children or {}) do
-        render_node(child, lines)
+        render_node(child, lines, form)
     end
 end
 

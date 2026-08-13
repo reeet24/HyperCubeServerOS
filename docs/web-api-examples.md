@@ -135,3 +135,58 @@ end
 ```
 
 Store website-specific user data under `subject.subject_token`, not under the viewer's raw Tesserac ID. The token is stable for your domain but cannot be used to identify the same person on other domains.
+
+## Routed Origin Form
+
+```lua
+local protocol = "tesserac"
+local domain = "feedback.tesserac"
+
+rednet.host(protocol, "feedback-origin")
+rednet.broadcast({
+    type = "web.register",
+    domain = domain,
+    title = "Feedback",
+    origin = true,
+    supports_api = true,
+}, protocol)
+
+local form_page = [[
+<page title="Feedback">
+<h1>Feedback</h1>
+<form action="/api/feedback" method="POST">
+<input name="title" label="Title" placeholder="Short title" />
+<textarea name="body" label="Message">Write your message here</textarea>
+<select name="priority" label="Priority">
+<option value="low">Low</option>
+<option value="normal">Normal</option>
+<option value="high">High</option>
+</select>
+<button type="submit">Send</button>
+</form>
+</page>
+]]
+
+while true do
+    local sender, message = rednet.receive(protocol)
+    if type(message) == "table" and message.type == "web.origin.request" then
+        local hctml = form_page
+        if message.path == "/api/feedback" then
+            local body = type(message.body) == "table" and message.body or {}
+            hctml = "<page title=\"Feedback\"><h1>Saved</h1><p>"
+                .. tostring(body.title or "Untitled")
+                .. " received with priority "
+                .. tostring(body.priority or "normal")
+                .. ".</p></page>"
+        end
+        rednet.send(sender, {
+            type = "web.origin.response",
+            request_id = message.request_id,
+            ok = true,
+            content_type = "hctml",
+            hctml = hctml,
+            status = 200,
+        }, protocol)
+    end
+end
+```

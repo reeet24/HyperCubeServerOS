@@ -363,5 +363,57 @@ HCTML is intentionally small. Existing pages use tags such as:
 - `<list>...</list>`
 - `<item>...</item>`
 - `<link href="/path">Label</link>`
+- `<form action="/api/save" method="POST">...</form>`
+- `<input name="title" label="Title" placeholder="Untitled" />`
+- `<textarea name="body" label="Body">Default text</textarea>`
+- `<select name="kind" label="Kind"><option value="post">Post</option></select>`
+- `<option value="...">Label</option>`
 
 Always escape user-provided text before inserting it into HCTML.
+
+## HCTML Forms
+
+Forms are rendered by HyperWeb and submitted through `web.request` to the form action. Forms only work on routed origins because stored pages do not receive API-style requests.
+
+Example:
+
+```xml
+<page title="Feedback">
+<h1>Feedback</h1>
+<form action="/api/feedback" method="POST">
+<input name="title" label="Title" placeholder="Short title" />
+<textarea name="body" label="Message">Write your message here</textarea>
+<select name="priority" label="Priority">
+<option value="low">Low</option>
+<option value="normal">Normal</option>
+<option value="high">High</option>
+</select>
+<button type="submit">Send</button>
+</form>
+</page>
+```
+
+When the user presses the submit button, the browser sends:
+
+```lua
+{
+    type = "web.request",
+    domain = "example.tesserac",
+    path = "/api/feedback",
+    method = "POST",
+    body = {
+        title = "...",
+        body = "...",
+        priority = "normal",
+    },
+}
+```
+
+Supported attributes:
+
+- `form`: `action`, `method`, `id`, `name`
+- `input`: `name`, `label`, `placeholder`, `value`, `maxlength`, `type`
+- `textarea`: `name`, `label`, `placeholder`, `maxlength`
+- `select`: `name`, `label`, `value`
+- `option`: `value`, `label`
+- `button`: `type="submit"` inside a form submits that form
