@@ -667,6 +667,24 @@ local function normalize_patch_path(path)
     return path
 end
 
+local function validate_lua_source(path, data)
+    if not tostring(path or ""):match("%.lua$") then
+        return true
+    end
+    local loader = loadstring or load
+    if not loader then
+        return true
+    end
+    local ok, chunk_or_err = pcall(loader, tostring(data or ""), "=" .. tostring(path))
+    if not ok then
+        return false, "PatchSyntaxError:" .. tostring(path) .. ":" .. tostring(chunk_or_err)
+    end
+    if type(chunk_or_err) ~= "function" then
+        return false, "PatchSyntaxError:" .. tostring(path) .. ":" .. tostring(chunk_or_err)
+    end
+    return true
+end
+
 local function apply_line_patch(base_data, patch)
     local lines = split_lines(base_data or "")
     local hunks = {}
@@ -758,6 +776,10 @@ local function apply_patch_record(collected, patch)
         data = apply_compose_patch(existing and existing.data or "", patch)
     else
         data = apply_line_patch(existing and existing.data or "", patch)
+    end
+    local valid, syntax_err = validate_lua_source(path, data)
+    if not valid then
+        return false, syntax_err
     end
     collected.by_path[path] = {
         path = path,
