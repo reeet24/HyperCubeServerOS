@@ -20,6 +20,7 @@ local banking_server = require("Kernal.services.banking_server")
 local atm_monitor = require("Kernal.services.atm_monitor")
 local moderation_server = require("Kernal.services.moderation_server")
 local docs_server = require("Kernal.services.docs_server")
+local auth_web = require("Kernal.services.tesserac_auth_web")
 local software_updates = require("Kernal.services.software_updates")
 local appstore = require("Kernal.services.appstore")
 local gui = require("Kernal.gui")
@@ -50,6 +51,7 @@ local HyperCube = {
     atm_monitor = atm_monitor,
     moderation_server = moderation_server,
     docs_server = docs_server,
+    auth_web = auth_web,
     software_updates = software_updates,
     appstore = appstore,
     gui = gui,
@@ -211,6 +213,11 @@ function HyperCube.boot()
             logger.warn("docs portal unavailable: " .. tostring(docs_err), HyperCube.root_context)
         end
 
+        local auth_web_ok, auth_web_err = auth_web.install(HyperCube)
+        if not auth_web_ok then
+            logger.warn("Tesserac Auth web service unavailable: " .. tostring(auth_web_err), HyperCube.root_context)
+        end
+
         local updates_ok, updates_err = software_updates.install(HyperCube)
         if not updates_ok then
             logger.warn("software updates unavailable: " .. tostring(updates_err), HyperCube.root_context)
@@ -247,6 +254,14 @@ function HyperCube.boot()
 
         init_system.add_task("service.docs", function(proc_context)
             return docs_server.start(HyperCube, proc_context)
+        end, {
+            privilege = "system",
+            daemon = true,
+            sandbox = HyperCube.root_context.sandbox,
+        })
+
+        init_system.add_task("service.tesserac_auth_web", function(proc_context)
+            return auth_web.start(HyperCube, proc_context)
         end, {
             privilege = "system",
             daemon = true,

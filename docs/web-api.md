@@ -8,9 +8,10 @@ The Tesserac web system serves HyperNet pages and API-style origin requests thro
 - Path: A normalized path such as `/` or `/reports`.
 - Stored page: HCTML saved in the server database.
 - Routed origin: A registered device that receives live `web.origin.request` messages.
+- Tesserac Auth: A first-party sign-in helper that gives routed websites a private per-domain token for the current viewer.
 - HCTML: HyperCube markup compiled by `Kernal/services/hctml.lua`.
 
-The internal moderation portal is a built-in special case at `moderation.tesserac`.
+The internal moderation portal is a built-in special case at `moderation.tesserac`. The first-party auth helper is served at `auth.tesserac`.
 
 ## Authentication
 
@@ -24,6 +25,86 @@ Additional device scopes:
 
 - `web.publish`: Required for `web.publish`.
 - `web.origin`: Required for registering a routed origin.
+
+## Tesserac Auth For Websites
+
+Routed websites can identify signed-in viewers without receiving the user's raw `tesserac_id` or `session_token`.
+
+When a signed-in user views a routed origin with `web.get` or `web.request`, the main server validates the viewer's TesseracID session and attaches an `auth` table to the `web.origin.request` sent to the origin server:
+
+```lua
+{
+    type = "web.origin.request",
+    request_id = "webreq_...",
+    domain = "market.tesserac",
+    path = "/",
+    method = "GET",
+    auth = {
+        domain = "market.tesserac",
+        subject_token = "wsub_123456789",
+        username = "playername",
+        display_name = "playername",
+        account_type = "personal",
+        issued_at = 1234567890000,
+        last_seen = 1234567890000,
+    },
+}
+```
+
+`subject_token` is stable for the same Tesserac account on the same domain, but different across domains. Use it as the website's private user ID. Do not treat it as a bank account, phone number, or global Tesserac ID.
+
+If the viewer is not signed in or their session cannot be validated, `auth` is still present but contains an error:
+
+```lua
+auth = {
+    ok = false,
+    error = "AuthRequired",
+}
+```
+
+Websites should handle this by showing a sign-in-required page or read-only guest experience.
+
+### Verify A Tesserac Auth Token
+
+Origin servers should verify a token before using it for account lookup, purchases, profiles, or saved state. Send this from the same origin computer that registered the routed domain:
+
+```lua
+{
+    type = "web.auth.verify",
+    domain = "market.tesserac",
+    subject_token = "wsub_123456789",
+}
+```
+
+Result type: `web.auth.verify.result`
+
+Successful result:
+
+```lua
+{
+    ok = true,
+    result = {
+        domain = "market.tesserac",
+        subject_token = "wsub_123456789",
+        username = "playername",
+        display_name = "playername",
+        account_type = "personal",
+        issued_at = 1234567890000,
+        last_seen = 1234567890000,
+    },
+}
+```
+
+Verification is origin-bound. The main server checks that the sender is the registered `origin_id` for the requested domain, so one website cannot verify or reuse another website's tokens.
+
+Errors include:
+
+- `AuthWebUnavailable`
+- `DomainRequired`
+- `SubjectTokenRequired`
+- `DomainNotFound`
+- `OriginDenied`
+- `SubjectNotFound`
 
 ## Register a Domain
 
@@ -182,6 +263,15 @@ Routed origin servers receive:
     query = {},
     body = nil,
     api = true,
+    auth = {
+        domain = "live.tesserac",
+        subject_token = "wsub_...",
+        username = "viewer",
+        display_name = "viewer",
+        account_type = "personal",
+        issued_at = 1234567890000,
+        last_seen = 1234567890000,
+    },
 }
 ```
 
@@ -237,6 +327,7 @@ The phone browser accepts:
 
 - `moderation.tesserac`
 - `moderation.tesserac/reports`
+- `auth.tesserac`
 - `hyper://moderation.tesserac/reports`
 - `hc://moderation.tesserac/reports`
 - `hcm://moderation.tesserac/reports`
@@ -274,4 +365,3 @@ HCTML is intentionally small. Existing pages use tags such as:
 - `<link href="/path">Label</link>`
 
 Always escape user-provided text before inserting it into HCTML.
-

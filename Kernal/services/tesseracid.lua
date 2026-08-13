@@ -277,11 +277,11 @@ local function prompt(label, hidden)
     return read()
 end
 
-local function request(network, message, expected)
+local function request(network, message, expected, timeout)
     if not network then
         return nil, "NetworkUnavailable"
     end
-    return network:request(message, expected, 5)
+    return network:request(message, expected, timeout or 12)
 end
 
 local function install_info()

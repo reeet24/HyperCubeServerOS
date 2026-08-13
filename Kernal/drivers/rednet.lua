@@ -306,6 +306,9 @@ local function first_party_web_service(self, domain)
     if self.docs_server and domain == tostring(self.docs_server.DOMAIN or "") then
         return self.docs_server
     end
+    if self.auth_web and domain == tostring(self.auth_web.DOMAIN or "") then
+        return self.auth_web
+    end
     return nil
 end
 
@@ -331,6 +334,26 @@ local function public_web_result(page)
         status = page.status,
         updated_at = page.updated_at,
         routed = page.routed == true,
+    }
+end
+
+local function web_viewer_auth(self, sender, route)
+    if not self.auth_web or not self.hypercube then
+        return nil
+    end
+    local ok, result = self.auth_web.issue_for_view(
+        self.hypercube,
+        sender,
+        route.message or route,
+        self.clients,
+        route.domain
+    )
+    if ok then
+        return result
+    end
+    return {
+        ok = false,
+        error = result,
     }
 end
 
@@ -385,6 +408,7 @@ local function route_origin_request(self, origin_id, route)
         query = route.query,
         body = route.body,
         api = route.api == true,
+        auth = route.auth,
     }, self.protocol)
 
     local deadline = os.clock() + (route.timeout or 6)
@@ -669,6 +693,11 @@ function RednetDriver:request(message, expected_type, timeout)
             if not expected_type or reply.type == expected_type then
                 log_event(self, "debug", "reply type=" .. message_type(reply) .. " sender=" .. tostring(sender))
                 return reply
+            elseif reply.ok == false and (reply.type == "server.reject" or reply.error) then
+                log_event(self, "warn", "request rejected type=" .. message_type(message) .. " reply=" .. message_type(reply) .. " error=" .. tostring(reply.error))
+                return nil, reply.error or message_type(reply) or "RequestRejected"
+            else
+                log_event(self, "debug", "ignored reply type=" .. message_type(reply) .. " expected=" .. tostring(expected_type))
             end
         end
     end
@@ -1087,6 +1116,13 @@ function RednetDriver:poll(timeout)
                 ok, result = self.web:resolve(message.domain)
             end
             reply_web(sender, self.protocol, "web.resolve.result", ok, result)
+        elseif type(message) == "table" and message.type == "web.auth.verify" then
+            log_event(self, "debug", "web.auth.verify sender=" .. tostring(sender) .. " domain=" .. tostring(message.domain or message.audience))
+            local ok, result = false, "AuthWebUnavailable"
+            if self.auth_web and self.hypercube then
+                ok, result = self.auth_web.verify(self.hypercube, sender, message)
+            end
+            reply_web(sender, self.protocol, "web.auth.verify.result", ok, result)
         elseif type(message) == "table" and message.type == "web.get" then
             log_event(self, "debug", "web.get sender=" .. tostring(sender) .. " domain=" .. tostring(message.domain) .. " path=" .. tostring(message.path or "/"))
             local ok, result = false, "WebUnavailable"
@@ -1108,6 +1144,11 @@ function RednetDriver:poll(timeout)
                         method = "GET",
                         headers = message.headers,
                         query = message.query,
+                        message = message,
+                        auth = web_viewer_auth(self, sender, {
+                            domain = message.domain,
+                            message = message,
+                        }),
                         timeout = message.timeout or 6,
                     })
                 else
@@ -1146,6 +1187,11 @@ function RednetDriver:poll(timeout)
                         query = message.query,
                         body = message.body,
                         api = true,
+                        message = message,
+                        auth = web_viewer_auth(self, sender, {
+                            domain = message.domain,
+                            message = message,
+                        }),
                         timeout = message.timeout or 6,
                     })
                     if ok then
